@@ -7,6 +7,14 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
+class ConfigurationError(Exception):
+    """Raised when application configuration is invalid or missing required values."""
+
+    def __init__(self, errors: list[str] | None = None, message: str | None = None):
+        self.errors = errors or []
+        super().__init__(message or "; ".join(self.errors))
+
+
 async def exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle uncaught exceptions and return JSON response."""
     if isinstance(exc, StarletteHTTPException):

@@ -24,9 +24,13 @@ MANIFEST
 # Flask/Django (если используются)
 instance/
 .webassets-cache
+# Environment files (CRITICAL - never commit secrets!)
 .env
 .env.local
 .env.*.local
+*.env
+backend/.env
+backend/.env.*
 *.log
 
 # SQLAlchemy
