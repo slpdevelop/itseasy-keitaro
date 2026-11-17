@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "itseasy-keitaro"
 version = "0.1.0"
 description = "Campaign manager for Keitaro advertising tracker via API"
-readme = "../README.md"
+# readme = "../README.md"  # disabled to avoid path issues
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
