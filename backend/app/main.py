@@ -2,9 +2,10 @@
 
 import logging
 from contextlib import asynccontextmanager
-from collections.abc.AsyncGenerator import AsyncGenerator
+from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.config import Config
 
 from app.core.config import settings
@@ -52,6 +53,20 @@ def get_app() -> FastAPI:
 
     api_router.include_router(v1_router)
     application.include_router(api_router)
+
+    # Add CORS middleware
+    # Only allow requests from known origins in development
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",  # Vite dev server default
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",  # Alternative dev server port
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # Register exception handlers
     application.add_exception_handler(Exception, exception_handler)
