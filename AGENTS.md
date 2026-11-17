@@ -387,6 +387,8 @@ environment. Never run destructive tests against production campaigns.
 -   Do not add dependencies when the standard library or existing
     project dependencies are sufficient.
 -   Do not change public interfaces without checking all call sites.
+-   **Never use imports inside functions and classes; place them only at the top of the file.**
+    Imports that are needed only for type hints must be placed under `from __future__ import annotations` or guarded with `if TYPE_CHECKING`.
 
 ## 15. Documentation
 
