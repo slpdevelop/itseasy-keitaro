@@ -62,9 +62,6 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# ИСКЛЮЧЕНИЕ папки ai в корне
-ai/
-
 # Virtual environments (explicit backend venv)
 venv/
 backend/venv/
