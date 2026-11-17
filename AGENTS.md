@@ -21,6 +21,7 @@ Rules:
 - Planning documentation is kept in the root directory.
 - Do not create Git commits — user will handle them separately.
 - Do not add new text or change numbering when moving tasks.
+- **Do not create empty directory structures.** Create files and directories only when specific code needs to be written or concrete changes are being made. Skip creating boilerplate folders ahead of time; materialize the structure as part of actual implementation work.
 
 ## 1. Mission
 
