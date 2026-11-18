@@ -14,9 +14,9 @@ class HealthResponse(BaseModel):
 
 
 @router.get(
-    "/",
+    "/health",
     response_model=HealthResponse,
-    summary="Check ba",
+    summary="Check application health",
     description="Returns health status of the application.",
     responses={
         "200": {"description": "Application is healthy"},

@@ -1,34 +1,47 @@
 """FastAPI application entry point."""
 
 import logging
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from typing import Optional
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.config import Config
 
-from app.core.config import settings
-from app.core.exceptions import exception_handler
+
+from app.core.exceptions import (
+    http_exception_handler,
+    unhandled_exception_handler,
+    validation_exception_handler,
+)
+from app.core.config import Settings, get_settings
+
 
 from app.api.v1.router import router as v1_router
+from app.api.endpoints.health import router as health_router
 
-# Configure logging at application startup
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+logger: logging.Logger = logging.getLogger(__name__)
+
+
+def setup_logging(settings: Settings) -> None:
+    # Configure logging at application startup
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
     """Application lifecycle events."""
+    settings: Settings = app.state.settings
+
     # Startup
     logger.info("Starting Keitaro Campaign Manager...")
-    logger.debug(f"   Environment: {settings.env}")
-    logger.debug(f"   Debug mode: {settings.debug}")
+    logger.debug("   Environment:  %s", settings.env)
+    logger.debug("   Debug mode: %s", settings.debug)
 
     yield
 
@@ -36,40 +49,53 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down Keitaro Campaign Manager...")
 
 
-def get_app() -> FastAPI:
+def get_app(settings: Optional[Settings] = None) -> FastAPI:
     """Create and configure FastAPI application."""
+    if settings is None:
+        settings: Settings = get_settings()
+    setup_logging(settings)
+
     application = FastAPI(
-        title="Keitaro Campaign Manager",
-        description="Campaign manager for Keitaro advertising tracker via API",
-        version="0.1.0",
+        title=settings.app_name,
+        description=settings.app_description,
+        version=settings.app_version,
         docs_url="/docs" if settings.env == "development" else None,
         redoc_url=None,
         openapi_url="/openapi.json" if settings.env == "development" else None,
         lifespan=lifespan,
     )
 
-    # Create API router with version prefix
-    api_router = APIRouter(prefix="/api", tags=["API"])
+    application.state.settings = settings
+    application.dependency_overrides[get_settings] = lambda: settings
 
-    api_router.include_router(v1_router)
-    application.include_router(api_router)
+    application.include_router(v1_router, prefix="/api")
+    application.include_router(health_router)
 
     # Add CORS middleware
     # Only allow requests from known origins in development
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",  # Vite dev server default
-            "http://127.0.0.1:5173",
-            "http://localhost:3000",  # Alternative dev server port
-        ],
+        allow_origins=settings.allowed_hosts,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
     # Register exception handlers
-    application.add_exception_handler(Exception, exception_handler)
+    application.add_exception_handler(
+        HTTPException,
+        http_exception_handler,
+    )
+
+    application.add_exception_handler(
+        RequestValidationError,
+        validation_exception_handler,
+    )
+
+    application.add_exception_handler(
+        Exception,
+        unhandled_exception_handler,
+    )
 
     return application
 

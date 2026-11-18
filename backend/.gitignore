@@ -1,0 +1,26 @@
+# Environment files (secrets)
+.env
+.env.*
+!venv/
+!dev.db
+*.db
+!.coverage
+!.coveragerc
+.coverage
+
+# Alembic migrations
+alembic/versions/*.pyc
+alembic/env.py.cpython-*.pyc
+*/__pycache__/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage reports
+coverage_html/

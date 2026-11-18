@@ -58,7 +58,6 @@ def test_openapi_schema_available(app: TestClient) -> None:
     assert response.headers["content-type"].startswith("application/json")
 
     # Parse and verify it's valid JSON
-    import json
     data = response.json()
     assert "openapi" in data
     assert data["info"]["title"] == "Keitaro Campaign Manager"
@@ -66,7 +65,6 @@ def test_openapi_schema_available(app: TestClient) -> None:
 
 def test_openapi_excluded_in_production(app: TestClient, monkeypatch) -> None:
     """Test that OpenAPI is excluded when ENV is not development."""
-    from app import main
 
     # Mock settings to be production environment
     with monkeypatch.context() as m:
