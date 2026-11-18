@@ -3,15 +3,15 @@
 import logging
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.exceptions import ConfigurationError
 
-# Project paths
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]  # backend root
-ENV_FILE_PATH: Path = PROJECT_ROOT / ".env"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE_PATH = PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -22,92 +22,109 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # Application
     app_name: str = "Keitaro Campaign Manager"
     app_version: str = "0.1.0"
     app_description: str = "Campaign manager for Keitaro advertising tracker via API"
-    env: str
-    debug: bool
+    env: Literal["development", "staging", "production"] = "development"
+    debug: bool = False
 
     # Keitaro
-    keitaro_base_url: str
-    keitaro_api_token: SecretStr
-    keitaro_timeout_seconds: int
+    keitaro_base_url: str = Field(min_length=1)
+    keitaro_api_token: SecretStr = Field(min_length=1)
+    keitaro_timeout_seconds: int = Field(default=30, ge=1)
 
-    # PostgreSQL (optional - for local data storage)
-    use_postgresql: bool
-    postgres_host: str = Field(default="localhost", min_length=1)
-    postgres_port: int = Field(ge=1, le=65535)
-    postgres_database: SecretStr
-    postgres_user: SecretStr
-    postgres_password: SecretStr
+    # Campaign defaults
+    campaign_name_prefix: str = "test_zhestkov_"
+    campaign_group_id: int = Field(default=10332, gt=0)
+    campaign_domain_id: int = Field(default=1813, gt=0)
+    campaign_traffic_source_id: int = Field(default=836, gt=0)
+
+    # Optional local storage configuration. Not used unless PostgreSQL support is enabled.
+    use_postgresql: bool = False
+    postgres_host: str | None = None
+    postgres_port: int | None = Field(default=None, ge=1, le=65535)
+    postgres_database: SecretStr | None = None
+    postgres_user: SecretStr | None = None
+    postgres_password: SecretStr | None = None
 
     # CORS
-    allowed_hosts: list[str]
+    cors_allowed_origins: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS", "ALLOWED_HOSTS"),
+    )
+    cors_allow_credentials: bool = False
 
     # Logging
-    log_level: str = "DEBUG"
+    log_level: str = "INFO"
 
-    @field_validator("env")
+    @field_validator("env", mode="before")
     @classmethod
-    def validate_env(cls, value: str) -> str:
-        """Validate environment variable."""
-        allowed = {"development", "staging", "production"}
+    def normalize_env(cls, value: str) -> str:
+        return value.lower() if isinstance(value, str) else value
 
-        value = value.lower()
-
-        if value not in allowed:
-            raise ValueError(f"ENV must be one of: {', '.join(sorted(allowed))}")
-
+    @field_validator("keitaro_base_url")
+    @classmethod
+    def validate_keitaro_base_url(cls, value: str) -> str:
+        value = value.rstrip("/")
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("KEITARO_BASE_URL must start with http:// or https://")
         return value
 
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, value: str) -> str:
-        """Validate log level."""
         value = value.upper()
-
         if not isinstance(getattr(logging, value, None), int):
             raise ValueError(f"Invalid LOG_LEVEL: {value}")
-
         return value
+
+    @field_validator("campaign_name_prefix")
+    @classmethod
+    def validate_campaign_name_prefix(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("CAMPAIGN_NAME_PREFIX cannot be blank")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_cors_and_postgres(self) -> "Settings":
+        if self.cors_allow_credentials and "*" in self.cors_allowed_origins:
+            raise ValueError("CORS wildcard origin cannot be used with credentials")
+        if self.use_postgresql:
+            missing = [
+                name
+                for name, value in (
+                    ("POSTGRES_HOST", self.postgres_host),
+                    ("POSTGRES_PORT", self.postgres_port),
+                    ("POSTGRES_DATABASE", self.postgres_database),
+                    ("POSTGRES_USER", self.postgres_user),
+                    ("POSTGRES_PASSWORD", self.postgres_password),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"PostgreSQL is enabled but settings are missing: {', '.join(missing)}")
+        return self
 
     @property
     def log_level_int(self) -> int:
-        """Return logging level as integer."""
         return getattr(logging, self.log_level)
-
-    @property
-    def keitaro_enabled(self) -> bool:
-        """Check whether Keitaro integration is configured."""
-        return bool(self.keitaro_base_url and self.keitaro_api_token)
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return cached application settings."""
     settings = Settings()
     validate_settings(settings)
     return settings
 
 
 def validate_settings(settings: Settings) -> None:
-    """Validate application configuration."""
-
-    errors = []
-
-    if settings.env == "production":
-        if not settings.keitaro_base_url:
-            errors.append("KEITARO_BASE_URL is required in production")
-
-        if not settings.keitaro_api_token:
-            errors.append("KEITARO_API_TOKEN is required in production")
-
-    if settings.keitaro_base_url:
-        if not settings.keitaro_base_url.startswith(("http://", "https://")):
-            errors.append("KEITARO_BASE_URL must start with http:// or https://")
-
+    """Keep application-level validation separate from Pydantic field parsing."""
+    errors: list[str] = []
+    if settings.env == "production" and not settings.keitaro_api_token.get_secret_value():
+        errors.append("KEITARO_API_TOKEN is required in production")
     if errors:
         raise ConfigurationError(errors)

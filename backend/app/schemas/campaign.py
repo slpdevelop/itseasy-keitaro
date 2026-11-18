@@ -2,7 +2,6 @@ import secrets
 import string
 from typing import Literal, LiteralString
 
-from app.constants import CAMPAIGN_NAME_PREFIX
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
@@ -16,8 +15,9 @@ class KeitaroCampaignCreateRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def strip_name(cls, value: str) -> str:
-        if not value.startswith(CAMPAIGN_NAME_PREFIX):
-            value = f"{CAMPAIGN_NAME_PREFIX}{value}"
+        value = value.strip()
+        if not value:
+            raise ValueError("Campaign name cannot be blank")
         return value
 
 

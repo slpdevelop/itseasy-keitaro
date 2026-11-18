@@ -1,17 +1,19 @@
 from app.api.dependencies import CampaignServiceDep
-from app.schemas.campaign import KeitaroCampaignCreateRequest
+from app.schemas.campaign import CampaignCreateResponse, KeitaroCampaignCreateRequest
 from fastapi import APIRouter, status
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
 
 
 @router.get("")
-async def get_campaigns(service: CampaignServiceDep):
+async def get_campaigns(service: CampaignServiceDep) -> list[dict]:
     return await service.get_campaigns()
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
-async def create_campaign(data: KeitaroCampaignCreateRequest, service: CampaignServiceDep):
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=CampaignCreateResponse)
+async def create_campaign(
+    data: KeitaroCampaignCreateRequest, service: CampaignServiceDep
+) -> CampaignCreateResponse:
     return await service.create_campaign(data)
 
 
