@@ -1,6 +1,6 @@
-from typing import Literal, Optional
+from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class FlowFilter(BaseModel):
@@ -21,7 +21,7 @@ class FlowCreate(BaseModel):
     campaign_id: int
     name: str
     type: str = "regular"
-    schema: Literal["redirect", "landings"]
+    schema_: str = Field(alias="schema")
     action_type: str = "http"
     action_payload: str = ""
     collect_clicks: bool = True
