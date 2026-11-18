@@ -1,50 +1,45 @@
+from ast import Dict
+
 from app.interfaces.campaign_gateway import CampaignGateway
-from app.schemas.campaign import CampaignCreate
-from app.schemas.offer import OfferResponse
+from app.schemas.campaign import CampaignCreate, KeitaroCampaignCreateRequest
+from app.constants import (
+    CAMPAIGN_NAME_PREFIX,
+    CAMPAIGN_DOMAIN_ID,
+    CAMPAIGN_GROUP_ID,
+    CAMPAIGN_TRAFFIC_SOURCE_ID,
+)
+from fastapi import HTTPException
 
 
 class CampaignService:
 
     def __init__(self, gateway: CampaignGateway):
-        self.gateway = gateway
+        self.gateway: CampaignGateway = gateway
+
+    async def get_campaigns(self) -> list[dict]:
+        campaigns = await self.gateway.get_campaigns()
+
+        return [
+            campaign
+            for campaign in campaigns
+            if (campaign.get("name") or "").startswith(CAMPAIGN_NAME_PREFIX)
+        ]
 
     async def create_campaign(
         self,
-        data: CampaignCreate,
+        data: KeitaroCampaignCreateRequest,
     ) -> dict:
-        return await self.gateway.create_campaign(data)
 
-    async def delete_campaign(
-        self,
-        campaign_id: int,
-    ) -> None:
-        await self.gateway.delete_campaign(campaign_id)
-
-    async def get_offers(self) -> list[OfferResponse]:
-        return await self.gateway.get_offers()
-
-    async def get_campaign_offers(
-        self,
-        campaign_id: int,
-    ) -> list[OfferResponse]:
-        return await self.gateway.get_campaign_offers(campaign_id)
-
-    async def add_offers(
-        self,
-        campaign_id: int,
-        offer_ids: list[int],
-    ) -> list[int]:
-        return await self.gateway.add_offers(
-            campaign_id,
-            offer_ids,
+        request_data = CampaignCreate(
+            name=data.name,
+            domain_id=CAMPAIGN_DOMAIN_ID,
+            group_id=CAMPAIGN_GROUP_ID,
+            traffic_source_id=CAMPAIGN_TRAFFIC_SOURCE_ID,
+            state="active",
         )
 
-    async def remove_offers(
-        self,
-        campaign_id: int,
-        offer_ids: list[int],
-    ) -> list[int]:
-        return await self.gateway.remove_offers(
-            campaign_id,
-            offer_ids,
-        )
+        response: dict = await self.gateway.create_campaign(request_data)
+        campaign_id = response.get("id")
+
+        if not campaign_id:
+            raise HTTPException(status_code=500, detail="Failed to create campaign")
