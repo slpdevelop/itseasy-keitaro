@@ -1,0 +1,17 @@
+# Keep secrets, local environments and caches out of the build context.
+.env
+.env.*
+.venv
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage_html/
+.coverage
+*.db
+app/tests/
+docker-compose.yml
+Dockerfile
+.dockerignore
