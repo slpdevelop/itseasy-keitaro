@@ -46,6 +46,13 @@ class CampaignCreate(BaseModel):
         return value
 
 
+class CampaignCreateResponse(BaseModel):
+    success: bool = True
+    campaign_id: int
+    campaign_name: str
+    message: str
+
+
 class CampaignResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     id: int | None = None

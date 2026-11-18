@@ -3,7 +3,7 @@ from typing import Annotated, Any
 from app.constants import CAMPAIGN_NAME_PREFIX
 from fastapi import APIRouter, Path, status
 
-from app.api.dependencies import CampaignServiceDep, KeitaroDep
+from app.api.dependencies import CampaignServiceDep, FlowServiceDep, KeitaroDep
 from app.schemas.campaign import KeitaroCampaignCreateRequest, CampaignDeleteResponse
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
@@ -17,6 +17,11 @@ async def get_campaigns(service: CampaignServiceDep):
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_campaign(data: KeitaroCampaignCreateRequest, service: CampaignServiceDep):
     return await service.create_campaign(data)
+
+
+@router.post("flow", status_code=status.HTTP_201_CREATED)
+async def create_flow(service: FlowServiceDep):
+    return await service.create_geo_flow(campaign_id=214150, geo_code="KZ")
 
 
 # @router.get("/{campaign_id}")
