@@ -34,6 +34,13 @@ class ConfigurationError(AppError):
         super().__init__(message or "; ".join(self.errors) or self.public_message)
 
 
+class DatabaseConnectionError(AppError):
+    """PostgreSQL could not be created or reached during startup."""
+
+    code = "DATABASE_CONNECTION_ERROR"
+    public_message = "Database connection failed"
+
+
 class InvalidRequestError(AppError):
     """Raised when valid request fields cannot be represented for the upstream API."""
 

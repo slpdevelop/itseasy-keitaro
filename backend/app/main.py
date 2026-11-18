@@ -10,11 +10,13 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import ASGIApp
 
 from app.api.endpoints.health import router as health_router
 from app.api.v1.router import router as v1_router
 from app.core.config import Settings, get_settings
+from app.core.database import connect_database, disconnect_database
 from app.core.exceptions import (
     AppError,
     app_exception_handler,
@@ -36,8 +38,15 @@ def setup_logging(settings: Settings) -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
-    """Own one reusable HTTP connection pool for the whole application lifespan."""
+    """Own the PostgreSQL connection and one reusable HTTP connection pool for the whole application lifespan."""
     settings: Settings = application.state.settings
+
+    db_engine: AsyncEngine | None = None
+    if settings.use_postgresql:
+        logger.info("Connecting to PostgreSQL at %s:%s", settings.postgres_host, settings.postgres_port)
+        db_engine = await connect_database(settings)
+        application.state.db_engine = db_engine
+
     client = httpx.AsyncClient(
         base_url=f"{settings.keitaro_base_url.rstrip('/')}/admin_api/v1",
         headers={
@@ -54,6 +63,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         yield
     finally:
         await client.aclose()
+        if db_engine is not None:
+            await disconnect_database(db_engine)
+            application.state.db_engine = None
         logger.info("Shutting down Keitaro Campaign Manager")
 
 

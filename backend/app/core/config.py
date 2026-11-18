@@ -14,6 +14,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE_PATH = PROJECT_ROOT / ".env"
 
 
+def _is_configured(value: object) -> bool:
+    """Treat missing and blank values (including empty secrets) as not configured."""
+    if isinstance(value, SecretStr):
+        return bool(value.get_secret_value())
+    if isinstance(value, str):
+        return bool(value.strip())
+    return value is not None
+
+
 class Settings(BaseSettings):
     """Application configuration."""
 
@@ -103,10 +112,10 @@ class Settings(BaseSettings):
                     ("POSTGRES_USER", self.postgres_user),
                     ("POSTGRES_PASSWORD", self.postgres_password),
                 )
-                if value is None
+                if not _is_configured(value)
             ]
             if missing:
-                raise ValueError(f"PostgreSQL is enabled but settings are missing: {', '.join(missing)}")
+                raise ValueError(f"PostgreSQL is enabled but settings are missing or empty: {', '.join(missing)}")
         return self
 
     @property
