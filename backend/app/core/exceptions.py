@@ -68,6 +68,11 @@ class CampaignCreationError(AppError):
     code = "CAMPAIGN_CREATION_FAILED"
     public_message = "Campaign creation failed and cleanup may be required"
 
+class CampaignNotFoundError(AppError):
+    status_code = 404
+    code = "CAMPAIGN_NOT_FOUND"
+    public_message = "Campaign not found"
+
 
 async def app_exception_handler(request: Request, exc: AppError) -> JSONResponse:
     logger.error("Application error %s: %s", exc.code, exc, exc_info=True)

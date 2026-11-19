@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 # Поправьте пути импорта под ваш проект.
@@ -55,6 +56,21 @@ class CampaignRepository:
             )
             flow = await self._upsert_flow(session, campaign, offer_flow, FlowType.OFFER, None, now)
             await self._upsert_flow_offers(session, flow, offer_flow.get("offers") or [])
+
+    async def get_campaign_detail(self, keitaro_id: int) -> Campaign | None:
+        """Return a campaign with its flows and linked offers loaded."""
+        async with self._session_factory() as session:
+            statement = (
+                select(Campaign)
+                .where(Campaign.keitaro_id == keitaro_id)
+                .options(
+                    selectinload(Campaign.flows)
+                    .selectinload(Flow.offers)
+                    .selectinload(FlowOffer.offer)
+                )
+            )
+            result = await session.execute(statement)
+            return result.scalar_one_or_none()
 
     # ------------------------------------------------------------------ helpers
 

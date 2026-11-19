@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from app.core.config import Settings
-from app.core.exceptions import CampaignCreationError, InvalidRequestError
+from app.core.exceptions import CampaignCreationError, CampaignNotFoundError, InvalidRequestError
 from app.repositories.campaign_repository import CampaignRepository
 from app.schemas.campaign import (
     CampaignCreatePayload,
     KTCampaignCreateResponse,
     KTCampaignCreateRequest,
+    CampaignDetailResponse,
 )
 
 if TYPE_CHECKING:
@@ -85,6 +86,12 @@ class CampaignService:
             for campaign in campaigns
             if (campaign.get("name") or "").startswith(self.settings.campaign_name_prefix)
         ]
+
+    async def get_campaign_detail(self, campaign_id: int) -> CampaignDetailResponse:
+        campaign = await self.campaign_repo.get_campaign_detail(campaign_id)
+        if campaign is None:
+            raise CampaignNotFoundError(f"Campaign with Keitaro ID {campaign_id} was not found")
+        return CampaignDetailResponse.model_validate(campaign)
 
     async def create_campaign(self, data: KTCampaignCreateRequest) -> KTCampaignCreateResponse:
         campaign_name = self._build_campaign_name(data.name)

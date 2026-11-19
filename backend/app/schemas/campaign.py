@@ -1,8 +1,10 @@
 import secrets
 import string
+from datetime import datetime
 from typing import Literal, LiteralString
+from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class KTCampaignCreateRequest(BaseModel):
@@ -50,3 +52,59 @@ class KTCampaignCreateResponse(BaseModel):
     campaign_id: int
     campaign_name: str
     message: str
+
+
+class CampaignOfferDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    keitaro_id: int
+    name: str
+
+
+class CampaignFlowOfferDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    offer: CampaignOfferDetailResponse
+    share: int
+    state: str
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def serialize_state(cls, value: object) -> str:
+        return value.value if hasattr(value, "value") else str(value)
+
+
+class CampaignFlowDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    keitaro_id: int
+    name: str
+    type: str | None
+    position: int
+    schema_: str | None = Field(alias="schema")
+    action_type: str | None
+    action_payload: str | None
+    country: str | None
+    offers: list[CampaignFlowOfferDetailResponse]
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def serialize_type(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return value.value if hasattr(value, "value") else str(value)
+
+
+class CampaignDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    keitaro_id: int
+    name: str
+    domain_keitaro_id: int | None
+    group_keitaro_id: int | None
+    traffic_source_keitaro_id: int | None
+    fetched_at: datetime | None
+    flows: list[CampaignFlowDetailResponse]
