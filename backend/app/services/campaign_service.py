@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING
 from app.core.config import Settings
 from app.core.exceptions import CampaignCreationError, InvalidRequestError
 from app.schemas.campaign import (
-    CampaignCreate,
-    CampaignCreateResponse,
-    KeitaroCampaignCreateRequest,
+    CampaignCreatePayload,
+    KTCampaignCreateResponse,
+    KTCampaignCreateRequest,
 )
 
 if TYPE_CHECKING:
@@ -32,14 +32,14 @@ class CampaignService:
             if (campaign.get("name") or "").startswith(self.settings.campaign_name_prefix)
         ]
 
-    async def create_campaign(self, data: KeitaroCampaignCreateRequest) -> CampaignCreateResponse:
+    async def create_campaign(self, data: KTCampaignCreateRequest) -> KTCampaignCreateResponse:
         campaign_name: str = data.name
         if not campaign_name.startswith(self.settings.campaign_name_prefix):
             campaign_name = f"{self.settings.campaign_name_prefix}{campaign_name}"
         if len(campaign_name) > 255:
             raise InvalidRequestError("Campaign name exceeds the 255-character Keitaro limit")
 
-        request_data = CampaignCreate(
+        request_data = CampaignCreatePayload(
             name=campaign_name,
             domain_id=self.settings.campaign_domain_id,
             group_id=self.settings.campaign_group_id,
@@ -64,11 +64,12 @@ class CampaignService:
                     "Failed to roll back campaign %s after flow creation failure", campaign_id
                 )
                 raise CampaignCreationError(
-                    "Flow creation failed and campaign cleanup also failed; manual cleanup is required"
+                    "Flow creation failed and campaign cleanup also failed; "
+                    "manual cleanup is required"
                 ) from exc
             raise
 
-        return CampaignCreateResponse(
+        return KTCampaignCreateResponse(
             campaign_id=campaign_id,
             campaign_name=campaign_name,
             message="Campaign and flows successfully created",

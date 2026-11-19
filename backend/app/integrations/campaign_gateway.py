@@ -1,5 +1,5 @@
 from app.integrations.keitaro import KeitaroGateway
-from app.schemas.campaign import CampaignCreate
+from app.schemas.campaign import CampaignCreatePayload
 
 
 class KeitaroCampaignGateway:
@@ -9,7 +9,7 @@ class KeitaroCampaignGateway:
     async def get_campaigns(self) -> list[dict]:
         return await self.gateway.get("/campaigns")
 
-    async def create_campaign(self, data: CampaignCreate) -> dict:
+    async def create_campaign(self, data: CampaignCreatePayload) -> dict:
         return await self.gateway.post("/campaigns", data.model_dump(exclude_none=True))
 
     async def delete_campaign(self, campaign_id: int) -> None:

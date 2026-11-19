@@ -1,5 +1,5 @@
 from app.api.dependencies import CampaignServiceDep
-from app.schemas.campaign import CampaignCreateResponse, KeitaroCampaignCreateRequest
+from app.schemas.campaign import KTCampaignCreateResponse, KTCampaignCreateRequest
 from fastapi import APIRouter, status
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
@@ -10,10 +10,10 @@ async def get_campaigns(service: CampaignServiceDep) -> list[dict]:
     return await service.get_campaigns()
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=CampaignCreateResponse)
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=KTCampaignCreateResponse)
 async def create_campaign(
-    data: KeitaroCampaignCreateRequest, service: CampaignServiceDep
-) -> CampaignCreateResponse:
+    data: KTCampaignCreateRequest, service: CampaignServiceDep
+) -> KTCampaignCreateResponse:
     return await service.create_campaign(data)
 
 
