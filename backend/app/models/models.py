@@ -36,6 +36,8 @@ class BaseModel(Base):
         server_default=func.now(),  # pylint: disable=not-callable
         onupdate=func.now(),  # pylint: disable=not-callable
     )
+    synced: Mapped[bool] = mapped_column(default=False)
+    deleted: Mapped[bool] = mapped_column(default=False)
 
 
 class KeitaroEntityMixin:

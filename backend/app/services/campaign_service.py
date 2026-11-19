@@ -82,24 +82,24 @@ class CampaignService:
 
     async def create_campaign(self, data: KTCampaignCreateRequest) -> KTCampaignCreateResponse:
         campaign_name = self._build_campaign_name(data.name)
-        cp: Checkpoint = Checkpoint(key=campaign_name)
+        cp = Checkpoint(key=campaign_name)
 
         campaign_id = await cp.run(
             "create_campaign",
             lambda: self._create_campaign_in_keitaro(campaign_name),
         )
-        await cp.run(
+        geo_flow = await cp.run(
             "create_geo_flow",
             lambda: self._create_geo_flow(campaign_id, data.country_code),
         )
-        await cp.run(
+        offer_flow = await cp.run(
             "create_offer_flow",
             lambda: self._create_offer_flow(campaign_id, data.offer_id_list),
         )
         await cp.run(
             "save_to_db",
             lambda: self._save_campaign_to_db(
-                campaign_id, campaign_name, data.country_code, data.offer_id_list
+                campaign_id, campaign_name, data.country_code, geo_flow, offer_flow
             ),
         )
 
@@ -109,6 +109,8 @@ class CampaignService:
             message="Campaign and flows successfully created",
         )
 
+    # ---- подготовка данных ----
+
     def _build_campaign_name(self, raw_name: str) -> str:
         name = raw_name
         if not name.startswith(self.settings.campaign_name_prefix):
@@ -116,6 +118,8 @@ class CampaignService:
         if len(name) > 255:
             raise InvalidRequestError("Campaign name exceeds the 255-character Keitaro limit")
         return name
+
+    # ---- шаги (подготовка данных + вызов API) ----
 
     async def _create_campaign_in_keitaro(self, campaign_name: str) -> int:
         payload = CampaignCreatePayload(
@@ -131,24 +135,28 @@ class CampaignService:
             raise CampaignCreationError("Keitaro did not return a valid campaign id")
         return campaign_id
 
-    async def _create_geo_flow(self, campaign_id: int, country_code: str) -> None:
-        await self.flow_service.create_geo_flow(campaign_id, country_code)
+    async def _create_geo_flow(self, campaign_id: int, country_code: str) -> dict:
+        # Ответ Keitaro (dict) сохраняется в чекпоинт и потом используется для записи в БД.
+        return await self.flow_service.create_geo_flow(campaign_id, country_code)
 
-    async def _create_offer_flow(self, campaign_id: int, offer_id_list: list[int]) -> None:
-        await self.flow_service.create_offer_flow(campaign_id, offer_id_list)
+    async def _create_offer_flow(self, campaign_id: int, offer_id_list: list[int]) -> dict:
+        return await self.flow_service.create_offer_flow(campaign_id, offer_id_list)
 
     async def _save_campaign_to_db(
         self,
         campaign_id: int,
         campaign_name: str,
         country_code: str,
-        offer_id_list: list[int],
+        geo_flow: dict,
+        offer_flow: dict,
     ) -> None:
-        """MOCK: заменить на реальную запись в БД (лучше upsert по campaign_id)."""
-        logger.info(
-            "[MOCK DB] saved campaign id=%s name=%s country=%s offers=%s",
-            campaign_id,
-            campaign_name,
-            country_code,
-            offer_id_list,
+        await self.campaign_repo.save_created_campaign(
+            keitaro_id=campaign_id,
+            name=campaign_name,
+            domain_keitaro_id=self.settings.campaign_domain_id,
+            group_keitaro_id=self.settings.campaign_group_id,
+            traffic_source_keitaro_id=self.settings.campaign_traffic_source_id,
+            country_code=country_code,
+            geo_flow=geo_flow,
+            offer_flow=offer_flow,
         )
