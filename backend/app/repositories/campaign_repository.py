@@ -7,14 +7,20 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+# Поправьте пути импорта под ваш проект.
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
 
-
-class CampaignCreationError(Exception):
-    pass
+# from ... import CampaignCreationError
 
 
 class CampaignRepository:
+    """
+    Сохраняет в локальную БД кампанию, её flows и связи flow -> offer.
+
+    Запись идёт одной транзакцией и является upsert-ом по keitaro_id. Это важно из-за
+    чекпоинта: если процесс упал после commit, но до записи шага в чекпоинт, повторный
+    вызов обновит те же строки, а не упадёт на unique(keitaro_id).
+    """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self._session_factory = session_factory
@@ -42,7 +48,7 @@ class CampaignRepository:
             campaign.group_keitaro_id = group_keitaro_id
             campaign.traffic_source_keitaro_id = traffic_source_keitaro_id
             campaign.fetched_at = now
-            await session.flush()
+            await session.flush()  # нужен campaign.id для внешних ключей
 
             await self._upsert_flow(
                 session, campaign, geo_flow, FlowType.GEO, country_code.upper(), now
@@ -100,11 +106,16 @@ class CampaignRepository:
         )
         offers_by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
 
-        # Offer.name обязателен, а в ответе Keitaro его нет, поэтому офферы должны
-        # быть уже синхронизированы в локальную таблицу offers.
+        # Оффера может ещё не быть локально (синхронизация не отработала). В ответе Keitaro
+        # имени нет, а Offer.name обязателен, поэтому создаём заглушку. fetched_at=None
+        # помечает строку как «ещё не загружена из Keitaro»: имя подтянет синхронизация.
         missing = sorted(set(keitaro_ids) - offers_by_keitaro_id.keys())
+        for keitaro_id in missing:
+            offer = Offer(keitaro_id=keitaro_id, name=f"Offer {keitaro_id}")
+            session.add(offer)
+            offers_by_keitaro_id[keitaro_id] = offer
         if missing:
-            raise CampaignCreationError(f"Offers {missing} are not found in the local DB")
+            await session.flush()  # нужны offer.id для внешних ключей
 
         existing = (
             (await session.execute(select(FlowOffer).where(FlowOffer.flow_id == flow.id)))

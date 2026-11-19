@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from app.core.config import Settings
 from app.core.exceptions import CampaignCreationError, InvalidRequestError
+from app.repositories.campaign_repository import CampaignRepository
 from app.schemas.campaign import (
     CampaignCreatePayload,
     KTCampaignCreateResponse,
@@ -66,11 +67,16 @@ class Checkpoint:
 
 class CampaignService:
     def __init__(
-        self, gateway: "CampaignGateway", flow_service: "FlowService", settings: Settings
+        self,
+        gateway: "CampaignGateway",
+        flow_service: "FlowService",
+        settings: Settings,
+        campaign_repo: CampaignRepository,
     ) -> None:
         self.gateway = gateway
         self.flow_service = flow_service
         self.settings = settings
+        self.campaign_repo = campaign_repo
 
     async def get_campaigns(self) -> list[dict]:
         campaigns = await self.gateway.get_campaigns()
