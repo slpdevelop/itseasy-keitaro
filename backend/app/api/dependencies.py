@@ -9,8 +9,10 @@ from app.integrations.keitaro import KeitaroGateway
 from app.integrations.flow_gateway import KeitaroFlowGateway
 from app.integrations.campaign_gateway import KeitaroCampaignGateway
 from app.repositories.campaign_repository import CampaignRepository
+from app.repositories.offer_repository import OfferRepository
 from app.services.campaign_service import CampaignService
 from app.services.flow_service import FlowService
+from app.services.offer_service import OfferService
 
 
 def get_keitaro_gateway(request: Request) -> KeitaroGateway:
@@ -60,3 +62,24 @@ def get_campaign_service(
 
 
 CampaignServiceDep = Annotated[CampaignService, Depends(get_campaign_service)]
+
+
+def get_offer_repository(request: Request) -> OfferRepository:
+    """Reuse one session factory/repository for the application lifetime."""
+    state = request.app.state
+    repository: OfferRepository | None = getattr(state, "offer_repository", None)
+    if repository is None:
+        engine: AsyncEngine = state.db_engine
+        repository = OfferRepository(async_sessionmaker(engine, expire_on_commit=False))
+        state.offer_repository = repository
+    return repository
+
+
+OfferRepositoryDep = Annotated[OfferRepository, Depends(get_offer_repository)]
+
+
+def get_offer_service(gateway: KeitaroDep, repository: OfferRepositoryDep) -> OfferService:
+    return OfferService(gateway=gateway, repository=repository)
+
+
+OfferServiceDep = Annotated[OfferService, Depends(get_offer_service)]

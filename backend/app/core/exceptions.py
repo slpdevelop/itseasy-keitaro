@@ -74,6 +74,12 @@ class CampaignNotFoundError(AppError):
     public_message = "Campaign not found"
 
 
+class OfferNotFoundError(AppError):
+    status_code = 404
+    code = "OFFER_NOT_FOUND"
+    public_message = "Offer not found"
+
+
 async def app_exception_handler(request: Request, exc: AppError) -> JSONResponse:
     logger.error("Application error %s: %s", exc.code, exc, exc_info=True)
     return JSONResponse(

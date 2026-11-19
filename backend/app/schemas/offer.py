@@ -1,6 +1,10 @@
-from pydantic import BaseModel, Field
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
+# Kept for existing campaign-related schemas/API compatibility.
 class OfferResponse(BaseModel):
     id: int
     name: str
@@ -23,8 +27,38 @@ class CampaignOffersUpdate(BaseModel):
 
 class CampaignOffersUpdateResponse(BaseModel):
     campaign_id: int
-    added: list[int] = []
-    removed: list[int] = []
-    total: int
     added: list[int] = Field(default_factory=list)
     removed: list[int] = Field(default_factory=list)
+    total: int
+
+
+class OfferCreateRequest(BaseModel):
+    keitaro_id: int = Field(gt=0)
+
+
+class LocalOfferResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    keitaro_id: int
+    name: str
+    synced: bool
+    deleted: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class LocalOfferListResponse(BaseModel):
+    items: list[LocalOfferResponse]
+    total: int
+
+
+class OfferDeleteResponse(BaseModel):
+    id: UUID
+    deleted: bool
+
+
+class OfferRestoreResponse(BaseModel):
+    id: UUID
+    deleted: bool
+    synced: bool
