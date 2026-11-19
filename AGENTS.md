@@ -1,430 +1,448 @@
-# AGENTS.md — контекст и правила разработки
-
-Этот файл — краткая карта backend-проекта **Keitaro Campaign Manager**. Прочитай его перед анализом задачи или изменением кода. Он описывает фактическую структуру репозитория и текущие реализации, а не желаемую архитектуру.
+# AGENTS.md — Keitaro Campaign Manager
 
 ## 1. Назначение проекта
 
-Backend на FastAPI для управления рекламными кампаниями в Keitaro через Admin API v1.
+Проект — backend на FastAPI для управления кампаниями Keitaro и локальными данными, связанными с кампаниями, потоками (streams/flows) и офферами.
 
-Основной сценарий создания кампании:
-1. Принять параметры кампании от клиента.
-2. Создать кампанию в Keitaro.
-3. Создать GEO-поток (stream) для перенаправления.
-4. Создать поток с офферами.
-5. Сохранить кампанию, потоки и связи с офферами в локальную PostgreSQL.
+Ключевая задача приложения:
+- получать список кампаний из Keitaro;
+- создавать кампании и связанные с ними потоки;
+- хранить локальную проекцию кампаний, потоков и привязок офферов;
+- позволять UI работать с локальными офферами и привязками;
+- синхронизировать изменения привязок офферов между локальной БД и Keitaro.
 
-Keitaro — внешняя система и источник идентификаторов `keitaro_id`. Локальная БД хранит собственные UUID и связанные данные.
+**Офферы как сущности уже существуют в Keitaro.** В рамках текущего функционала не нужно создавать офферы в Keitaro или обновлять их свойства. Требуется управлять только связями `FlowOffer` — привязками существующих офферов к потокам кампаний.
 
-## 2. Технологии
+Перед изменениями сначала изучи существующую реализацию и придерживайся текущей архитектуры. Не переписывай работающие части проекта без необходимости.
 
-- Python; фактическая конфигурация проекта ориентирована на Python 3.13.
-- FastAPI, Uvicorn.
-- Pydantic v2 и pydantic-settings.
-- SQLAlchemy 2.x async ORM, `asyncpg`.
+## 2. Технологический стек и соглашения
+
+- Python 3.11+ (ориентируйся на синтаксис, уже используемый в проекте).
+- FastAPI.
+- Pydantic v2 (`model_dump`, `model_validate`, `ConfigDict`, `Field`).
+- SQLAlchemy 2.x, async ORM (`Mapped`, `mapped_column`, `AsyncSession`, `async_sessionmaker`).
+- PostgreSQL через `asyncpg`.
 - Alembic для миграций.
-- HTTPX `AsyncClient` для запросов к Keitaro.
-- PostgreSQL.
-- Pytest, pytest-asyncio, HTTPX, Respx.
-- Docker / Docker Compose.
-- Ruff и mypy.
+- `httpx.AsyncClient` для запросов к Keitaro.
+- Pytest и pytest-asyncio для тестов.
 
-Зависимости и настройки инструментов находятся в `pyproject.toml`.
+Общие правила:
+- Все обращения к БД и Keitaro — асинхронные.
+- Не использовать синхронный SQLAlchemy Session или синхронный HTTP-клиент.
+- Не добавлять новую зависимость, если задачу можно решить уже используемыми библиотеками.
+- Не помещать API-токены, пароли и другие секреты в код, логи, тестовые фикстуры или документацию.
+- Не менять публичные контракты endpoint без явной необходимости; при изменении обновлять схемы и тесты.
+- Не скрывать ошибки широким `except Exception: pass`. Если ошибка обрабатывается на уровне отдельной сущности/потока, возвращать её в отчёте синхронизации и продолжать обработку остальных сущностей.
 
-## 3. Карта проекта
+## 3. Архитектура и ответственность слоёв
 
-```text
-app/
-├── asgi.py                     # ASGI entry point: uvicorn app.asgi:app
-├── main.py                     # FastAPI application factory и lifespan
-├── api/
-│   ├── dependencies.py         # FastAPI dependencies и сборка объектов приложения
-│   ├── endpoints/
-│   │   └── health.py           # GET /health
-│   └── v1/
-│       ├── router.py           # сборка API v1
-│       └── endpoints/
-│           ├── campaigns.py    # GET/POST /api/v1/campaigns
-│           ├── offers.py       # GET /api/v1/offers, GET /api/v1/offers/{id}
-│           └── resources.py    # справочники Keitaro
-├── core/
-│   ├── config.py               # Settings, загрузка и валидация конфигурации
-│   ├── database.py             # создание/проверка/закрытие PostgreSQL engine
-│   └── exceptions.py           # прикладные исключения и HTTP handlers
-├── integrations/
-│   ├── keitaro.py              # HTTP-клиент-обёртка для Keitaro
-│   ├── campaign_gateway.py     # Keitaro implementation для кампаний
-│   └── flow_gateway.py         # Keitaro implementation для потоков
-├── interfaces/
-│   ├── campaign_gateway.py     # CampaignGateway Protocol
-│   └── flow_gateway.py         # FlowGateway Protocol
-├── models/
-│   └── models.py               # SQLAlchemy Base и ORM-модели
-├── repositories/
-│   └── campaign_repository.py  # сохранение кампании, flows и flow-offers
-├── schemas/
-│   ├── campaign.py             # входные/выходные схемы кампаний и payload Keitaro
-│   ├── flow.py                 # схема потока и вложенных фильтров/офферов
-│   └── offer.py                # схемы офферов
-├── services/
-│   ├── campaign_service.py     # сценарий создания и получения кампаний
-│   └── flow_service.py         # подготовка и создание GEO/offer flows
-└── tests/
-    ├── conftest.py
-    └── api/v1_test.py
+Соблюдай направление зависимостей:
 
-alembic/
-├── env.py
-└── versions/                   # версии миграций
+`API endpoint → Service → Repository / Gateway → Database / Keitaro API`
 
-alembic.ini
-Dockerfile
-docker-compose.yml
-pyproject.toml
-.env.example
-README.md
-```
+### API
 
-Не ориентируйся на устаревшую схему каталогов в README: сверяйся с реальными файлами репозитория.
+Расположение: `app/api/`.
 
-## 4. Архитектура и направление зависимостей
+- `app/api/v1/endpoints/` — HTTP-маршруты.
+- `app/api/v1/router.py` — сборка v1-маршрутов.
+- `app/api/dependencies.py` — FastAPI dependencies и создание сервисов/репозиториев.
 
-Используется разделение на API, services, interfaces, integrations и repositories.
+Endpoint должен быть тонким:
+- принять и провалидировать входные данные;
+- получить сервис через dependency injection;
+- вызвать метод сервиса;
+- вернуть результат.
 
-### API layer — `app/api/`
+Не размещай в endpoint SQL-запросы, построение payload Keitaro или бизнес-логику синхронизации.
 
-Отвечает за HTTP-контракт:
-- объявляет маршруты и HTTP-методы;
-- принимает и валидирует входные Pydantic-схемы;
-- получает зависимости через FastAPI `Depends`;
-- вызывает сервисы или gateway для простых прокси-операций;
-- возвращает результат.
+Все v1-маршруты подключаются с префиксом `/api/v1`:
+- `get_app()` в `app/main.py` подключает v1 router с `/api`;
+- `app/api/v1/router.py` добавляет `/v1`.
 
-Не размещай здесь бизнес-сценарии, SQL-запросы, детали HTTP-вызовов к Keitaro или сборку сложных payload.
+### Services
 
-### Services — `app/services/`
+Расположение: `app/services/`.
 
-Оркестрируют бизнес-сценарии:
-- `CampaignService` управляет последовательностью создания кампании;
-- `FlowService` формирует данные GEO- и offer-потоков и передаёт их gateway.
+Сервис отвечает за бизнес-сценарии и оркестрацию:
+- валидацию бизнес-условий;
+- вызов Gateway;
+- вызов Repository;
+- обработку частичных ошибок;
+- формирование результата операции.
 
-Сервис зависит от интерфейса/контракта внешнего взаимодействия, настроек и репозитория, а не должен самостоятельно создавать HTTP-клиент или управлять FastAPI Request.
+Сервисы не должны самостоятельно создавать `AsyncSession` или строить SQL-запросы.
 
-### Interfaces — `app/interfaces/`
+### Repositories
 
-Содержат `Protocol`-контракты gateway. Это граница между бизнес-логикой и конкретной реализацией интеграции.
+Расположение: `app/repositories/`.
 
-При добавлении новой реализации сохраняй совместимость с соответствующим Protocol.
+Репозиторий отвечает за SQLAlchemy и транзакции:
+- чтение и запись моделей;
+- загрузку связей через `selectinload` и другие подходящие loader options;
+- атомарное изменение связанных записей;
+- управление локальными флагами синхронизации.
 
-### Integrations — `app/integrations/`
+Используй `async with self._session_factory() as session, session.begin()` для транзакционных операций по принятому в проекте шаблону.
 
-Содержат реализацию взаимодействия с Keitaro:
-- `KeitaroGateway` — общая HTTP-обёртка;
-- `KeitaroCampaignGateway` — операции с кампаниями;
-- `KeitaroFlowGateway` — операции с потоками.
+### Integrations и Interfaces
 
-Не дублируй обработку HTTP-ошибок и транспортную логику в endpoint/service.
+Расположение:
+- `app/integrations/` — реальные адаптеры Keitaro;
+- `app/interfaces/` — Protocol-контракты для gateway.
 
-### Repositories — `app/repositories/`
+Сервис зависит от интерфейса (`Protocol`), а не от конкретного HTTP-адаптера. Реальный Gateway должен использовать общий `KeitaroGateway`.
 
-Отвечают за локальное хранение и ORM-запросы. Сейчас `CampaignRepository` сохраняет кампанию, два потока и связи потоков с офферами в одной транзакции.
+Не дублируй обработку HTTP-ошибок, таймаутов и JSON в отдельных адаптерах — это ответственность `KeitaroGateway`.
 
-Не помещай SQLAlchemy-запросы в endpoint или integration.
+### Schemas
 
-### Models и schemas
+Расположение: `app/schemas/`.
 
-- `models/` — ORM-модели SQLAlchemy и структура локальной БД.
-- `schemas/` — Pydantic-контракты API и payload, передаваемых Keitaro.
+Используй Pydantic-схемы для входных и выходных контрактов. Не возвращай ORM-объекты напрямую, если для endpoint уже предусмотрена response schema.
 
-Не путай Pydantic-схему с ORM-моделью: это разные уровни и разные задачи.
+Для поля Python `schema`, конфликтующего с атрибутом Pydantic, используй Python-имя `schema_` и `Field(alias="schema")`; при сериализации Keitaro payload используй `by_alias=True`.
 
-## 5. Как проходит создание кампании
+## 4. Модель данных
 
-Текущий маршрут: `POST /api/v1/campaigns`.
+Модели находятся в `app/models/models.py`.
 
-Последовательность:
+### BaseModel
 
-```text
-HTTP client
-  -> app/api/v1/endpoints/campaigns.py
-  -> CampaignServiceDep (app/api/dependencies.py)
-  -> CampaignService.create_campaign()
-       -> Checkpoint.run("create_campaign")
-            -> CampaignGateway
-                 -> KeitaroCampaignGateway
-                      -> KeitaroGateway
-                           -> Keitaro Admin API
-       -> Checkpoint.run("create_geo_flow")
-            -> FlowService.create_geo_flow()
-                 -> FlowGateway -> KeitaroFlowGateway -> KeitaroGateway
-       -> Checkpoint.run("create_offer_flow")
-            -> FlowService.create_offer_flow()
-                 -> FlowGateway -> KeitaroFlowGateway -> KeitaroGateway
-       -> Checkpoint.run("save_to_db")
-            -> CampaignRepository.save_created_campaign()
-                 -> SQLAlchemy AsyncSession -> PostgreSQL
-  -> KTCampaignCreateResponse
-```
+Общие поля:
+- `id` — UUID локальной БД;
+- `created_at`, `updated_at`;
+- `synced` — локальный флаг синхронизации;
+- `deleted` — локальный soft-delete флаг.
 
-### Детали сценария
+### KeitaroEntityMixin
 
-`CampaignService.create_campaign()`:
-1. Формирует имя через `_build_campaign_name()`. Используется `settings.campaign_name_prefix` (по умолчанию `test_zhestkov_`).
-2. Создаёт кампанию через `CampaignGateway`.
-3. Создаёт GEO flow через `FlowService`.
-4. Создаёт offer flow через `FlowService`.
-5. Сохраняет результат в локальную БД через `CampaignRepository`.
-6. Возвращает `KTCampaignCreateResponse`.
+Общие поля для сущностей Keitaro:
+- `keitaro_id` — числовой ID сущности в Keitaro;
+- `fetched_at` — время последнего получения данных из Keitaro.
 
-Для шагов используется `Checkpoint` из `campaign_service.py`. По умолчанию файл чекпоинта находится в системной temp-директории (`campaign_checkpoint.json`), ключ — итоговое имя кампании. Успешный результат шага сохраняется в JSON и используется при повторном запросе. `clear()` сбрасывает запись для ключа, но автоматически в сценарии не вызывается.
-
-При изменении этого сценария учитывай частично выполненные внешние операции: повторный запрос может продолжить выполнение с сохранённого шага, а не начать с нуля.
-
-`CampaignRepository.save_created_campaign()` выполняет upsert по `keitaro_id` и использует одну транзакцию для кампании, flows и flow-offers. Не разбивай эту запись на независимые commit без явной причины.
-
-## 6. Текущие модели данных
-
-Все основные сущности используют UUID как локальный первичный ключ через `BaseModel.id`. Для сущностей Keitaro используется `KeitaroEntityMixin.keitaro_id` — уникальный индексируемый integer ID внешней системы.
+Не путай UUID `id` локальной записи с integer `keitaro_id` внешней сущности. Во внешние запросы Keitaro передаётся `keitaro_id`, а связи внутри БД строятся по UUID.
 
 ### Campaign
 
-Таблица `campaigns`:
-- `id` — локальный UUID;
-- `keitaro_id` — ID кампании в Keitaro;
-- `name`;
-- `domain_keitaro_id`, `group_keitaro_id`, `traffic_source_keitaro_id`;
-- `fetched_at`;
-- общие поля `created_at`, `updated_at`, `synced`, `deleted`;
-- relationship `flows`.
+- Хранит локальную запись кампании.
+- Имеет `keitaro_id`, имя и идентификаторы ресурсов Keitaro.
+- Связана с `Flow` через `Campaign.flows`.
 
 ### Flow
 
-Таблица `flows`:
-- `id`, `keitaro_id`;
-- `campaign_id` — FK на `campaigns.id`, `ON DELETE CASCADE`;
-- `name`, `type`, `position`;
-- `schema`, `action_type`, `action_payload`, `country`;
-- `fetched_at` и общие поля.
-
-`FlowType`: `geo`, `offer`. Для `country` задано ограничение: NULL или ровно два символа.
+- Представляет поток/stream кампании Keitaro.
+- Содержит `campaign_id` (локальный UUID FK) и `keitaro_id` (ID потока в Keitaro).
+- Содержит тип потока `FlowType.GEO` или `FlowType.OFFER`, позицию и параметры потока.
+- Связан с `Campaign` и `FlowOffer`.
 
 ### Offer
 
-Таблица `offers`:
-- `id`, `keitaro_id`;
-- `name`, `fetched_at`;
-- общие поля.
+- Представляет локальную запись существующего оффера Keitaro.
+- В текущей модели содержит `keitaro_id`, `name`, `fetched_at` и общие флаги.
+- Оффер импортируется из Keitaro в локальную БД; `OfferService.add_offer()` сначала запрашивает `GET /offers/{id}`, затем сохраняет локальную запись.
+- Добавление оффера в локальную БД **не создаёт** оффер в Keitaro.
 
 ### FlowOffer
 
-Таблица `flow_offers` связывает `Flow` и `Offer`:
-- `flow_id` — FK на `flows.id`, `ON DELETE CASCADE`;
-- `offer_id` — FK на `offers.id`, `ON DELETE RESTRICT`;
-- `share` — CHECK от 0 до 100;
-- `state` — `active` или `disabled`;
-- уникальная пара `(flow_id, offer_id)`.
+Это центральная модель для текущей задачи синхронизации.
 
-При изменении ORM-моделей проверь необходимость новой Alembic-миграции. Не редактируй уже применённые миграции без отдельного согласованного решения.
+- Представляет привязку существующего оффера к конкретному потоку.
+- `flow_id` — локальный UUID потока.
+- `offer_id` — локальный UUID оффера.
+- `share` — доля трафика (целое число от 0 до 100).
+- `state` — `active` или `disabled`.
+- Имеет собственные `synced` и `deleted`.
+- На пару `(flow_id, offer_id)` действует уникальное ограничение.
 
-## 7. Keitaro API и HTTP-клиент
+При изменении привязок обновляй флаги синхронизации на уровне потока и/или `FlowOffer` согласованно. Не используй `Offer.synced` как замену состоянию синхронизации привязок.
 
-`app/main.py` создаёт один `httpx.AsyncClient` на lifespan приложения:
-- `base_url` строится как `{KEITARO_BASE_URL}/admin_api/v1`;
-- API key передаётся заголовком `Api-Key`;
-- timeout задаётся `KEITARO_TIMEOUT_SECONDS`.
+## 5. Основной бизнес-сценарий создания кампании
 
-`KeitaroGateway.request()`:
-- выполняет запрос;
-- преобразует timeout в `KeitaroTimeoutError`;
-- преобразует транспортные и HTTP-ошибки Keitaro в `KeitaroError`;
-- возвращает `None` для 204/пустого ответа;
-- ожидает JSON для непустого успешного ответа.
+Endpoint: `POST /api/v1/campaigns`.
 
-Новые вызовы Keitaro добавляй через gateway-слой и соответствующий Protocol, если это отдельная операция/область ответственности. Учитывай, что успешный HTTP-ответ не гарантирует ожидаемую структуру JSON: проверяй необходимые поля на уровне бизнес-сценария.
+Входная схема: `KTCampaignCreateRequest` (`app/schemas/campaign.py`):
+- `name`;
+- `country_code`;
+- `offer_id_list` — список уже существующих в Keitaro ID офферов.
 
-Не логируй API key, пароль БД, полный URL с секретами или содержимое чувствительных заголовков.
+Сценарий в `CampaignService.create_campaign()`:
+1. Формирует имя кампании с префиксом `campaign_name_prefix`.
+2. Создаёт кампанию в Keitaro.
+3. Создаёт GEO-поток.
+4. Создаёт OFFER-поток с переданными `offer_id`.
+5. Сохраняет кампанию, потоки и привязки офферов в локальную БД.
 
-## 8. API endpoints
+Для возобновления многошагового процесса используется `Checkpoint` в `CampaignService`. Результаты шагов сохраняются в JSON в системной временной директории (`campaign_checkpoint.json`). Не удаляй и не обходи checkpoint-механику без отдельного решения: она защищает от повторного создания уже созданных сущностей при повторном запросе после частичного сбоя.
 
-Префиксы собираются так:
-- `app/main.py`: `application.include_router(v1_router, prefix="/api")`;
-- `app/api/v1/router.py`: `APIRouter(prefix="/v1")`.
+Параметры кампании по умолчанию задаются в `Settings` (`app/core/config.py`):
+- `campaign_name_prefix` — `test_zhestkov_`;
+- `campaign_group_id`;
+- `campaign_domain_id`;
+- `campaign_traffic_source_id`.
 
-Фактические маршруты:
+Не хардкодь эти значения в сервисах — используй Settings.
 
-| Метод | Путь | Назначение |
-|---|---|---|
-| GET | `/health` | Health check приложения |
-| GET | `/api/v1/campaigns` | Получить кампании с фильтрацией по настроенному префиксу имени |
-| POST | `/api/v1/campaigns` | Создать кампанию, GEO flow, offer flow и сохранить локально |
-| GET | `/api/v1/offers` | Получить офферы из Keitaro |
-| GET | `/api/v1/offers/{offer_id}` | Получить один оффер |
-| GET | `/api/v1/domains` | Справочник доменов |
-| GET | `/api/v1/groups` | Справочник групп |
-| GET | `/api/v1/traffic-sources` | Справочник источников трафика |
-| GET | `/api/v1/stream-filters` | Справочник stream filters |
-| GET | `/api/v1/stream-schemas` | Справочник stream schemas |
-| GET | `/api/v1/stream-types` | Справочник stream types |
-| GET | `/api/v1/streams-actions` | Справочник stream actions |
+## 6. Синхронизация привязок офферов и потоков
 
-Документация OpenAPI доступна в development-режиме по `/docs` и `/openapi.json`. В production эти URL отключены настройками `get_app()`.
+Синхронизация выполняется **на уровне потока**, потому что Keitaro обновляет коллекцию `offers` у потока целиком. Если у одного потока изменилось несколько привязок, нужно отправить один запрос с полным актуальным списком, а не отдельный запрос на каждую привязку.
 
-## 9. Dependency Injection
+Сами офферы уже созданы в Keitaro. Не реализовывай создание/редактирование сущностей `/offers` в рамках этой задачи. Обновляется только поле `offers` соответствующего потока.
 
-Фабрики зависимостей расположены в `app/api/dependencies.py`.
+### 6.1 Keitaro → локальная БД
 
-Основные зависимости:
-- `KeitaroDep` — `KeitaroGateway`, использующий `request.app.state.http_client`;
-- `FlowServiceDep` — `FlowService` с `KeitaroFlowGateway`;
-- `CampaignRepositoryDep` — `CampaignRepository`, созданный из `request.app.state.db_engine`;
-- `CampaignServiceDep` — `CampaignService` с gateway, flow service, settings и repository.
+Endpoint: `POST /api/v1/offers/sync/from-keitaro`.
 
-При добавлении зависимости:
-1. Создай функцию-провайдер в `app/api/dependencies.py`, если это зависимость уровня приложения/API.
-2. Объяви тип через `Annotated[..., Depends(...)]`.
-3. Инжектируй dependency в endpoint/service factory через типизированный параметр.
-4. Не создавай новый HTTP client или engine на каждый запрос — используй ресурсы lifespan.
+Реализация находится в `FlowService.sync_from_keitaro()`.
 
-Важно: сейчас `get_campaign_repository()` предполагает, что `request.app.state.db_engine` уже создан. Но создание engine в lifespan условное (`settings.use_postgresql`). При `USE_POSTGRESQL=False` dependency для campaign service не сможет получить engine. Перед использованием/изменением этого поведения сначала уточни ожидаемый режим хранения и исправь конфигурацию/DI согласованно.
+Текущая логика:
+1. Получить локально отслеживаемые кампании и их потоки через `CampaignRepository.get_local_campaign_streams()`.
+2. Для каждой кампании запросить потоки Keitaro через `GET /campaigns/{campaign_id}/streams`.
+3. Сопоставить удалённые потоки с локальными по `keitaro_id`.
+4. Для OFFER-потоков, содержащих `offers`, проверить элементы списка.
+5. Сопоставить офферы по `keitaro_id`; если оффера ещё нет локально, создать локальную заглушку `Offer` с именем `Offer {id}`.
+6. Обновить локальные `FlowOffer`: `share`, `state`, `synced=True`, `deleted=False`.
+7. Установить `Flow.synced=True` и обновить `Flow.fetched_at`.
+8. Ошибку отдельной кампании/потока записать в `errors` и продолжить обработку остальных.
 
-## 10. Конфигурация и запуск
+В этом направлении Keitaro является источником истины для привязок соответствующего потока. Не удаляй кампанию или поток только потому, что они отсутствуют в ответе API.
 
-Настройки описаны в `app/core/config.py`, загружаются из `.env` в корне backend-проекта. Не читай и не выводи реальные `.env`/секреты в логах или ответах.
+**Важно при дальнейших изменениях:** текущая реализация `sync_flow_offers_from_keitaro()` физически удаляет локальные `FlowOffer`, отсутствующие в ответе Keitaro. Если продуктовая логика потребует сохранять историю привязок, переходи на soft delete отдельной миграцией/изменением поведения, но не меняй семантику молча.
 
-Основные параметры:
+### 6.2 Локальная БД → Keitaro
+
+Endpoint: `POST /api/v1/offers/sync/to-keitaro`.
+
+Реализация находится в `FlowService.sync_to_keitaro()`.
+
+Текущая логика:
+1. Получить OFFER-потоки, для которых `Flow.synced=False` или существует `FlowOffer.synced=False`.
+2. Загрузить связанные `FlowOffer` и `Offer`.
+3. Для каждого потока сформировать полный список активных локально привязанных офферов:
+
+```json
+[
+  {
+    "offer_id": 123,
+    "share": 100,
+    "state": "active"
+  }
+]
+```
+
+4. Исключить связи с `FlowOffer.deleted=True`.
+5. Отправить **один** запрос на поток: `PUT /streams/{flow_keitaro_id}` с payload `{"offers": [...]}`.
+6. Только после успешного ответа отметить поток и его связи как `synced=True`.
+7. При ошибке оставить состояние несинхронизированным, добавить ошибку в результат и продолжить обработку других потоков.
+
+Не отправляй в Keitaro локальный UUID. Для `offer_id` всегда используй `FlowOffer.offer.keitaro_id`; для URL потока — `Flow.keitaro_id`.
+
+При добавлении/изменении/удалении локальной привязки обязательно помечай соответствующий `Flow` как `synced=False`. Если изменяется несколько связей одного потока, они должны попасть в одну отправку полного списка.
+
+Если будет реализован UI для удаления привязки через soft delete, удалённая связь должна быть исключена из payload. Не удаляй сам `Offer` из Keitaro: локальное удаление оффера и удаление его привязки к потоку — разные операции.
+
+### 6.3 Gateway для потоков
+
+`KeitaroFlowGateway` (`app/integrations/flow_gateway.py`) реализует:
+- `create_flow()` → `POST /streams`;
+- `get_campaign_flows()` → `GET /campaigns/{campaign_id}/streams`;
+- `update_flow_offers()` → `PUT /streams/{flow_id}` с изменением только `offers`.
+
+Для синхронизации не отправляй полную конфигурацию потока, если меняются только привязки офферов. Это позволяет не затронуть фильтры, правила, схему и остальные настройки потока.
+
+Контракт интерфейса расположен в `app/interfaces/flow_gateway.py`. При добавлении нового метода обновляй Protocol и реальный адаптер, а сервис тестируй через fake/mock Gateway.
+
+### 6.4 Формат результата синхронизации
+
+Сохраняй прозрачную статистику операции, аналогичную текущей:
+- `campaigns_checked` / `flows_checked`;
+- `flows_synced`;
+- `errors`;
+- `success` (`true`, если ошибок нет).
+
+Не возвращай секреты, полный объект HTTP-клиента или внутренние данные с токенами. Ошибки в отчёте должны содержать идентификатор кампании/потока и безопасное описание/тип ошибки.
+
+## 7. Текущие HTTP endpoints
+
+Базовый префикс: `/api/v1`.
+
+### Campaigns
+
+- `GET /api/v1/campaigns` — получить кампании из Keitaro, отфильтрованные по `campaign_name_prefix`.
+- `GET /api/v1/campaigns/{campaign_id}` — получить детальную локальную кампанию с потоками и привязками офферов.
+- `POST /api/v1/campaigns` — создать кампанию, GEO-поток, OFFER-поток и сохранить локальные данные.
+
+### Offers
+
+- `GET /api/v1/offers` — получить каталог офферов непосредственно из Keitaro.
+- `GET /api/v1/offers/{offer_id}` — получить один оффер из Keitaro (legacy route; не путать с локальным UUID).
+- `GET /api/v1/offers/local` — получить локальные офферы; `include_deleted=true` включает soft-deleted записи.
+- `POST /api/v1/offers` — импортировать существующий оффер Keitaro в локальную БД по `keitaro_id`.
+- `DELETE /api/v1/offers/{offer_id}` — soft delete локальной записи оффера по UUID.
+- `PATCH /api/v1/offers/{offer_id}/restore` — восстановить локальную запись оффера.
+- `POST /api/v1/offers/sync/from-keitaro` — синхронизировать привязки потоков из Keitaro.
+- `POST /api/v1/offers/sync/to-keitaro` — отправить изменённые привязки потоков в Keitaro.
+
+### Resources
+
+- `GET /api/v1/domains`
+- `GET /api/v1/groups`
+- `GET /api/v1/traffic-sources`
+- `GET /api/v1/stream-filters`
+- `GET /api/v1/stream-schemas`
+- `GET /api/v1/stream-types`
+- `GET /api/v1/streams-actions`
+
+Health endpoint зарегистрирован отдельно от v1 router; проверь `app/api/endpoints/health.py` для точного пути.
+
+## 8. Интеграция с Keitaro и конфигурация
+
+### HTTP-клиент
+
+`app/main.py` создаёт один `httpx.AsyncClient` в `lifespan`:
+- base URL: `{KEITARO_BASE_URL}/admin_api/v1`;
+- заголовок `Api-Key`;
+- timeout из `KEITARO_TIMEOUT_SECONDS`.
+
+Не создавай отдельный `AsyncClient` в каждом сервисе или endpoint. Получай общий клиент через `get_keitaro_gateway()`.
+
+`KeitaroGateway` (`app/integrations/keitaro.py`) централизованно обрабатывает:
+- timeout → `KeitaroTimeoutError`;
+- сетевые ошибки → `KeitaroError`;
+- HTTP error status → `KeitaroError`;
+- пустой ответ / 204;
+- JSON decode error.
+
+Не логируй `Api-Key` и заголовки запроса целиком.
+
+### Settings
+
+Конфигурация: `app/core/config.py`.
+
+Основные переменные:
 - `KEITARO_BASE_URL`;
 - `KEITARO_API_TOKEN`;
 - `KEITARO_TIMEOUT_SECONDS`;
+- `ENV`, `DEBUG`, `LOG_LEVEL`;
 - `CAMPAIGN_NAME_PREFIX`;
 - `CAMPAIGN_GROUP_ID`;
 - `CAMPAIGN_DOMAIN_ID`;
 - `CAMPAIGN_TRAFFIC_SOURCE_ID`;
 - `USE_POSTGRESQL`;
 - `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DATABASE`, `POSTGRES_USER`, `POSTGRES_PASSWORD`;
-- `CORS_ALLOWED_ORIGINS`, `CORS_ALLOW_CREDENTIALS`;
-- `ENV`, `DEBUG`, `LOG_LEVEL`.
+- CORS настройки.
 
-Некоторые campaign defaults имеют значения по умолчанию в `Settings`; сверяйся с `config.py`, а не предполагай, что все они обязательно заданы в `.env.example`.
+Не коммить `.env`. Валидацию конфигурации сохраняй в Settings, не размазывай по сервисам.
 
-### Локальный запуск
+## 9. База данных и Alembic
 
-```bash
-# Из корня backend
-python -m venv .venv
+### Подключение
 
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
+- `app/core/database.py` формирует PostgreSQL URL и управляет подключением.
+- `app/main.py` подключает БД в `lifespan`, если `USE_POSTGRESQL=True`.
+- `app/api/dependencies.py` получает `AsyncEngine` из `app.state` и создаёт `async_sessionmaker`.
+- `alembic/env.py` импортирует `Base.metadata` и получает DSN из Settings, если PostgreSQL включён; иначе использует `sqlalchemy.url` из Alembic config.
 
-# Установка приложения и dev-зависимостей
-pip install -e ".[dev]"
+Не создавать таблицы через `Base.metadata.create_all()` в production startup. Структуру БД изменять миграциями Alembic.
 
-# Запуск API
-uvicorn app.asgi:app --reload --port 8000
-```
+### Миграции
 
-### Docker
+При изменении моделей:
+1. Создать новую миграцию, не переписывая уже применённую initial migration.
+2. Проверить сгенерированный Alembic diff вручную.
+3. Учитывать имена PostgreSQL enum types (`flow_type`, `flow_offer_state`) и корректно выполнять downgrade.
+4. Проверить upgrade и downgrade на тестовой БД, если она доступна.
+5. Не утверждать, что миграция проверена, если фактически она не запускалась.
 
-```bash
-docker compose up -d --build
-docker compose ps
-docker compose logs -f app
-docker compose down
-```
-
-Compose поднимает PostgreSQL и приложение. В контейнерной сети приложение подключается к хосту БД `postgres`.
-
-### Миграции Alembic
-
-`alembic/env.py` импортирует `Base.metadata` из `app.models.models` и получает DSN через `get_settings()` + `build_database_url()` при `USE_POSTGRESQL=True`.
+Обычно команды из корня backend:
 
 ```bash
-# Из корня backend, при активном venv и настроенном .env
+alembic revision --autogenerate -m "describe change"
 alembic upgrade head
-
-# Создать миграцию после изменения ORM-моделей
-alembic revision --autogenerate -m "describe_schema_change"
-
-# Откатить одну ревизию
 alembic downgrade -1
-
-# Текущая ревизия БД
-alembic current
-
-# История
-alembic history
 ```
 
-После autogenerate обязательно просмотри миграцию: Alembic не заменяет code review и может не распознать переименование или смысловое изменение.
+Для Alembic нужен корректный `alembic.ini` с `script_location = alembic` либо эквивалентная конфигурация. DSN может поступать из `.env` через `USE_POSTGRESQL=True` и Settings; иначе требуется `sqlalchemy.url` в Alembic config. Не хардкодь секретный DSN в `alembic.ini`.
 
-## 11. Тестирование и качество кода
+## 10. Обработка ошибок
 
-Тесты находятся в `app/tests/`. Текущий `conftest.py` создаёт `TestClient` через `get_app()`. Текущий набор API-тестов проверяет health/API setup/OpenAPI/CORS, но не является полным покрытием бизнес-сценария создания кампании и сохранения в БД.
+Исключения приложения находятся в `app/core/exceptions.py`.
 
-Запуск:
+Используй существующие классы, если они подходят:
+- `InvalidRequestError` — некорректные данные/бизнес-запрос;
+- `KeitaroError` / `KeitaroTimeoutError` — ошибки upstream Keitaro;
+- `CampaignCreationError` — ошибка многошагового создания кампании;
+- `CampaignNotFoundError`;
+- `OfferNotFoundError`;
+- `DatabaseConnectionError`;
+- `ConfigurationError`.
+
+Не возвращай пользователю внутренний traceback. Общие exception handlers уже зарегистрированы в `app/main.py`.
+
+Для bulk/sync операций предпочтительна частичная обработка: сбой одного потока не должен прерывать синхронизацию всех остальных потоков. Итоговый ответ должен явно показывать частичный успех и ошибки.
+
+## 11. Тестирование и критерии готовности
+
+Тесты находятся в `app/tests/`.
+
+При добавлении функциональности:
+- тестируй бизнес-логику сервиса отдельно от FastAPI;
+- подменяй Gateway fake/mock-объектами, не вызывай реальный Keitaro в unit-тестах;
+- проверяй Repository на тестовой БД/сессии, если изменение затрагивает SQL;
+- проверяй HTTP endpoint и response schema;
+- тестируй успешный сценарий, пустой список, некорректный ответ Keitaro и ошибку одного потока;
+- для синхронизации проверяй, что на один поток уходит ровно один PUT с полным списком `offers`;
+- проверяй, что `synced=True` устанавливается только после успешного ответа Keitaro;
+- проверяй, что при ошибке флаги остаются несинхронизированными.
+
+Команды (из корня backend, в активированном virtualenv):
 
 ```bash
-pytest app/tests/ -v
-pytest app/tests/ -v --cov=app --cov-report=term-missing
-ruff check .
-ruff format .
-mypy app/
+pytest
+python -m compileall app
 ```
 
-При изменении бизнес-логики добавляй тесты на:
-- успешный сценарий;
-- ошибочный ответ/исключение Keitaro;
-- невалидный или неполный ответ внешнего API;
-- повторный запуск/поведение checkpoint, если затронуты шаги создания;
-- запись в БД и rollback транзакции, если затронут repository;
-- DI и режимы включённой/отключённой БД, если меняется lifecycle.
+Если тесты падают, отделяй новые регрессии от существующих проблем тестовой конфигурации. Не объявляй весь набор тестов успешным на основании выборочного теста.
 
-Используй HTTP mocking (в проекте присутствует Respx) вместо реальных запросов к Keitaro в unit/integration тестах.
+## 12. Правила внесения изменений
 
-## 12. Правила разработки для AI-агента
+Перед началом задачи:
+1. Прочитать этот `AGENTS.md`.
+2. Изучить затрагиваемые endpoint, schema, service, repository, gateway и модели.
+3. Проверить, нет ли уже существующего метода/сценария, который можно расширить.
+4. Проверить фактический контракт Keitaro по API-документации проекта, если она доступна. Не угадывать названия полей и форматы запросов.
 
-1. **Сначала исследуй, потом редактируй.** Перед изменением прочитай целевой модуль, его интерфейс, вызывающие места и тесты.
-2. **Не ломай направление зависимостей.** Endpoint → service → interface/gateway/repository. Интеграционная HTTP-деталь не должна проникать в бизнес-сервис.
-3. **Не смешивай внешние и локальные ID.** `keitaro_id` — ID Keitaro; `id` — локальный UUID. Не подменяй один другим.
-4. **Не обходи Pydantic-контракты без причины.** Для payload используй схемы и `model_dump(...)` с нужными `by_alias`/`exclude_none`.
-5. **Соблюдай async.** Для SQLAlchemy и HTTPX используй async API; не блокируй event loop синхронными сетевыми/DB-вызовами.
-6. **Транзакции должны быть явными.** Несколько связанных записей в repository выполняй атомарно, если бизнес-операция требует целостности.
-7. **Миграции обязательны при изменении схемы БД.** ORM-модель и миграция должны соответствовать друг другу.
-8. **Не добавляй скрытые fallback-и.** Если БД или Keitaro недоступны, поведение должно быть явным и соответствовать контракту.
-9. **Не делай широких рефакторингов в рамках точечной задачи.** Меняй минимальный набор файлов, необходимый для решения.
-10. **Не выдумывай API Keitaro.** Проверяй существующие схемы/документацию проекта и реальные контракты; не угадывай названия полей и endpoint.
-11. **Не коммить секреты и локальные данные.** Не добавляй `.env`, токены, пароли, дампы, `dev.db`, временные checkpoint-файлы.
-12. **Не скрывай ошибки.** Не заменяй исключения на `None`/успешный ответ без явного бизнес-решения.
-13. **Сохраняй совместимость.** При изменении API проверь response model, status code, валидацию и существующих клиентов/тесты.
-14. **После изменений проверяй результат.** Запусти релевантные тесты и статические проверки; если не запускались — явно сообщи об этом.
+При реализации:
+- вносить минимально необходимый набор изменений;
+- соблюдать существующие имена и стиль проекта;
+- не создавать дублирующие сервисы, репозитории или gateway;
+- обновлять Protocol, dependency wiring, schemas и tests вместе с новой функциональностью;
+- не менять unrelated endpoints;
+- не удалять существующие комментарии/функции без причины;
+- не добавлять миграцию, если схема БД не меняется;
+- при изменении модели всегда добавлять миграцию;
+- не менять синхронизацию офферов на синхронизацию самих офферов: синхронизируются привязки к потокам.
 
-## 13. Известные несоответствия и места для проверки
+После реализации:
+1. Проверить diff.
+2. Запустить компиляцию и релевантные тесты.
+3. По возможности запустить полный набор тестов.
+4. Сообщить, какие файлы изменены и какие проверки реально выполнены.
+5. Отдельно указать известные ограничения/непроверенные сценарии.
 
-Это наблюдения по текущему снимку репозитория, а не разрешение автоматически менять их при любой задаче:
+## 13. Важные запреты и типичные ошибки
 
-- `README.md` содержит устаревшее описание структуры и упоминает health под `/api/v1/`; фактический health route объявлен как `/health`.
-- В README указана установка `.[dev,test]`, но в `pyproject.toml` определён optional extra `dev`, а отдельного `test` extra нет. Используй `.[dev]`, пока конфигурация не изменена.
-- В `pyproject.toml` указано `requires-python = ">=3.9"`, но настройки Ruff/mypy и фактический код ориентированы на Python 3.13 и используют современный синтаксис типов. Не обещай поддержку Python 3.9 без отдельной проверки и корректировки метаданных/кода.
-- `USE_POSTGRESQL` по умолчанию `False`, но `CampaignRepositoryDep` требует `request.app.state.db_engine`, который создаётся только при включённой PostgreSQL. Это влияет на `GET/POST /api/v1/campaigns` через текущую сборку `CampaignServiceDep`.
-- `CampaignRepository._upsert_flow()` использует `CampaignCreationError`, но в текущем файле `campaign_repository.py` этот символ не импортирован. При ветке невалидного ID потока возможен `NameError`; при работе с этим кодом проверь и исправь импорт.
-- В `CampaignOffersUpdateResponse` в `schemas/offer.py` поля `added` и `removed` объявлены дважды. Схема сейчас не используется в показанных endpoints; при работе с ней проверь и приведи к одному объявлению с `default_factory`.
-- `Checkpoint` хранит результаты в одном JSON-файле системной temp-директории. Это локальный механизм возобновления, не распределённое/межпроцессное хранилище. Не считай его безопасным механизмом конкурентной координации нескольких workers.
-- В `CampaignRepository._upsert_flow_offers()` текущая реализация обновляет/добавляет связи, но не удаляет связи, отсутствующие в новом списке. Не предполагай, что это полноценная синхронизация состава офферов.
-- Тесты в `app/tests/api/v1_test.py` содержат проверки `/api/v1/` и health response, тогда как текущий health router регистрирует `/health`. Перед изменением тестов сначала установи фактический ожидаемый контракт и проверь запуск тестового набора.
-
-Не исправляй все перечисленные пункты автоматически. Выбирай только те, которые относятся к задаче, и сообщай о побочных исправлениях отдельно.
-
-## 14. Как агенту начинать новую задачу
-
-Перед реализацией:
-1. Сформулируй, какой пользовательский сценарий и API/данные затрагиваются.
-2. Найди endpoint и проследи вызовы до service, gateway/repository и модели.
-3. Проверь Pydantic-схемы и реальные payload/response-контракты.
-4. Найди существующие тесты и связанные миграции.
-5. Определи минимальный набор изменений.
-
-В завершении:
-1. Перечисли изменённые файлы и роль каждого изменения.
-2. Укажи миграции, если менялась БД.
-3. Укажи команды тестов/проверок и их результат.
-4. Отдельно перечисли оставшиеся риски или непроверенные сценарии.
-
-Если задача требует решения, которого текущая архитектура явно не поддерживает, сначала объясни конфликт и предложи минимальный вариант, не перестраивая проект самовольно.
+- Не путать `campaign_id` / `flow_id` / `offer_id` Keitaro с локальными UUID.
+- Не передавать UUID в Keitaro API.
+- Не создавать повторно уже существующие в Keitaro офферы.
+- Не обновлять свойства оффера, когда задача касается привязки оффера к потоку.
+- Не отправлять отдельный PUT на каждую связь `FlowOffer`; один PUT на один поток.
+- Не отправлять весь объект потока, если нужно изменить только `offers`.
+- Не помечать поток синхронизированным до подтверждённого успешного ответа Keitaro.
+- Не помечать все потоки синхронизированными, если часть запросов завершилась ошибкой.
+- Не удалять локальные кампании/потоки на основании отсутствия в ответе одного запроса без отдельного согласованного сценария.
+- Не выполнять SQL в endpoint или сервисе.
+- Не создавать HTTP-клиент на каждый запрос.
+- Не использовать `func.now` как вызываемую функцию Python; в SQLAlchemy это SQL expression, как уже используется в моделях.
+- Не переименовывать Pydantic field `schema_` без учёта alias `schema`.
+- Не менять существующую checkpoint-логику создания кампании без оценки последствий повторного выполнения.
