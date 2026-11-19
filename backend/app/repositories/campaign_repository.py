@@ -4,14 +4,13 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 # Поправьте пути импорта под ваш проект.
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
-
-# from ... import CampaignCreationError
+from app.core.exceptions import CampaignCreationError
 
 
 class CampaignRepository:
@@ -56,6 +55,7 @@ class CampaignRepository:
             )
             flow = await self._upsert_flow(session, campaign, offer_flow, FlowType.OFFER, None, now)
             await self._upsert_flow_offers(session, flow, offer_flow.get("offers") or [])
+            flow.synced = True
 
     async def get_campaign_detail(self, keitaro_id: int) -> Campaign | None:
         """Return a campaign with its flows and linked offers loaded."""
@@ -71,6 +71,111 @@ class CampaignRepository:
             )
             result = await session.execute(statement)
             return result.scalar_one_or_none()
+
+    async def get_local_campaign_streams(self) -> list[dict[str, Any]]:
+        """Return locally tracked campaigns and their Keitaro stream IDs."""
+        async with self._session_factory() as session:
+            statement = (
+                select(Campaign)
+                .where(Campaign.deleted.is_(False))
+                .options(selectinload(Campaign.flows))
+            )
+            campaigns = (await session.execute(statement)).scalars().unique().all()
+            return [
+                {
+                    "keitaro_id": campaign.keitaro_id,
+                    "flows": [
+                        {"id": flow.id, "keitaro_id": flow.keitaro_id}
+                        for flow in campaign.flows
+                        if not flow.deleted
+                    ],
+                }
+                for campaign in campaigns
+            ]
+
+    async def sync_flow_offers_from_keitaro(
+        self, flow_keitaro_id: int, items: list[dict[str, Any]]
+    ) -> bool:
+        """Replace local links with the authoritative offer list returned by Keitaro."""
+        now = datetime.now(timezone.utc)
+        async with self._session_factory() as session, session.begin():
+            flow = await self._get_by_keitaro_id(session, Flow, flow_keitaro_id)
+            if flow is None:
+                return False
+
+            offer_ids = [int(item["offer_id"]) for item in items]
+            offers = []
+            if offer_ids:
+                offers = (
+                    await session.execute(select(Offer).where(Offer.keitaro_id.in_(offer_ids)))
+                ).scalars().all()
+            offers_by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
+
+            for missing_id in sorted(set(offer_ids) - offers_by_keitaro_id.keys()):
+                offer = Offer(keitaro_id=missing_id, name=f"Offer {missing_id}", synced=True)
+                session.add(offer)
+                offers_by_keitaro_id[missing_id] = offer
+            if offer_ids:
+                await session.flush()
+
+            existing_links = (
+                await session.execute(select(FlowOffer).where(FlowOffer.flow_id == flow.id))
+            ).scalars().all()
+            links_by_offer_id = {link.offer_id: link for link in existing_links}
+            remote_offer_ids: set[Any] = set()
+
+            for item in items:
+                offer = offers_by_keitaro_id[int(item["offer_id"])]
+                remote_offer_ids.add(offer.id)
+                link = links_by_offer_id.get(offer.id)
+                if link is None:
+                    link = FlowOffer(flow_id=flow.id, offer_id=offer.id)
+                    session.add(link)
+                    links_by_offer_id[offer.id] = link
+                link.share = int(item["share"])
+                link.state = FlowOfferState(item.get("state") or FlowOfferState.ACTIVE.value)
+                link.synced = True
+                link.deleted = False
+
+            # Keitaro is the source of truth for this direction, including an empty list.
+            for link in existing_links:
+                if link.offer_id not in remote_offer_ids:
+                    await session.delete(link)
+
+            flow.synced = True
+            flow.fetched_at = now
+            await session.flush()
+            return True
+
+    async def get_flows_pending_sync(self) -> list[Flow]:
+        """Load flows whose associations (or the flow itself) need pushing to Keitaro."""
+        async with self._session_factory() as session:
+            dirty_link = select(FlowOffer.id).where(
+                FlowOffer.flow_id == Flow.id,
+                FlowOffer.synced.is_(False),
+            ).exists()
+            statement = (
+                select(Flow)
+                .where(Flow.deleted.is_(False), Flow.type == FlowType.OFFER)
+                .where(or_(Flow.synced.is_(False), dirty_link))
+                .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
+                .order_by(Flow.keitaro_id)
+            )
+            return list((await session.execute(statement)).scalars().unique().all())
+
+    async def mark_flow_synced(self, flow_id) -> None:
+        async with self._session_factory() as session, session.begin():
+            flow = await session.scalar(
+                select(Flow)
+                .where(Flow.id == flow_id)
+                .options(selectinload(Flow.offers))
+            )
+            if flow is None:
+                return
+            flow.synced = True
+            for link in flow.offers:
+                link.synced = True
+            await session.flush()
 
     # ------------------------------------------------------------------ helpers
 
@@ -127,7 +232,7 @@ class CampaignRepository:
         # помечает строку как «ещё не загружена из Keitaro»: имя подтянет синхронизация.
         missing = sorted(set(keitaro_ids) - offers_by_keitaro_id.keys())
         for keitaro_id in missing:
-            offer = Offer(keitaro_id=keitaro_id, name=f"Offer {keitaro_id}")
+            offer = Offer(keitaro_id=keitaro_id, name=f"Offer {keitaro_id}", synced=True)
             session.add(offer)
             offers_by_keitaro_id[keitaro_id] = offer
         if missing:
@@ -146,8 +251,11 @@ class CampaignRepository:
             if link is None:
                 link = FlowOffer(flow_id=flow.id, offer_id=offer.id)
                 session.add(link)
+                by_offer_id[offer.id] = link
             link.share = int(item["share"])
             link.state = FlowOfferState(item.get("state") or FlowOfferState.ACTIVE.value)
+            link.synced = True
+            link.deleted = False
         await session.flush()
 
     @staticmethod

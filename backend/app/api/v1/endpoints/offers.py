@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Path, Query, status
 
-from app.api.dependencies import OfferServiceDep
+from app.api.dependencies import OfferServiceDep, FlowServiceDep
 from app.schemas.offer import (
     LocalOfferListResponse,
     LocalOfferResponse,
@@ -13,6 +13,18 @@ from app.schemas.offer import (
 )
 
 router = APIRouter(prefix="/offers", tags=["Offers"])
+
+
+@router.post("/sync/from-keitaro")
+async def sync_offer_bindings_from_keitaro(service: FlowServiceDep) -> dict:
+    """Pull offer-to-stream bindings from Keitaro into the local database."""
+    return await service.sync_from_keitaro()
+
+
+@router.post("/sync/to-keitaro")
+async def sync_offer_bindings_to_keitaro(service: FlowServiceDep) -> dict:
+    """Push locally changed offer-to-stream bindings to Keitaro."""
+    return await service.sync_to_keitaro()
 
 
 @router.get("/local", response_model=LocalOfferListResponse)

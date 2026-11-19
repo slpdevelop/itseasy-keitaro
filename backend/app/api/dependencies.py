@@ -23,13 +23,6 @@ def get_keitaro_gateway(request: Request) -> KeitaroGateway:
 KeitaroDep = Annotated[KeitaroGateway, Depends(get_keitaro_gateway)]
 
 
-def get_flow_service(gateway: KeitaroDep) -> FlowService:
-    return FlowService(gateway=KeitaroFlowGateway(gateway))
-
-
-FlowServiceDep = Annotated[FlowService, Depends(get_flow_service)]
-
-
 def get_campaign_repository(request: Request) -> CampaignRepository:
     """Build the repository from the engine created in the app lifespan.
 
@@ -45,6 +38,13 @@ def get_campaign_repository(request: Request) -> CampaignRepository:
 
 
 CampaignRepositoryDep = Annotated[CampaignRepository, Depends(get_campaign_repository)]
+
+
+def get_flow_service(gateway: KeitaroDep, repository: CampaignRepositoryDep) -> FlowService:
+    return FlowService(gateway=KeitaroFlowGateway(gateway), repository=repository)
+
+
+FlowServiceDep = Annotated[FlowService, Depends(get_flow_service)]
 
 
 def get_campaign_service(
