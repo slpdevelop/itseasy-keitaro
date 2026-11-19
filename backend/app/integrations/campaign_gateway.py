@@ -14,3 +14,6 @@ class KeitaroCampaignGateway:
 
     async def delete_campaign(self, campaign_id: int) -> None:
         await self.gateway.delete(f"/campaigns/{campaign_id}")
+
+    async def get_by_id(self, campaign_id: int) -> None:
+        return await self.gateway.get(f"/campaigns/{campaign_id}")

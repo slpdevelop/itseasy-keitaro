@@ -115,7 +115,7 @@ class FlowOffer(BaseModel):
     offer_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("offers.id", ondelete="RESTRICT"), index=True
     )
-    share: Mapped[int] = mapped_column(Integer)  # доля трафика, а не строка
+    share: Mapped[int] = mapped_column(Integer)
     state: Mapped[FlowOfferState] = mapped_column(
         Enum(FlowOfferState, name="flow_offer_state", values_callable=_enum_values),
         default=FlowOfferState.ACTIVE,
