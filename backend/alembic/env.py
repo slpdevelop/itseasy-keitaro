@@ -1,0 +1,111 @@
+"""Alembic migration environment.
+
+The database URL is resolved from the application settings (``backend/.env``)
+via :func:`app.core.database.build_database_url`, so migrations use exactly
+the same PostgreSQL connection as the application itself.
+"""
+
+import asyncio
+import sys
+from logging.config import fileConfig
+from pathlib import Path
+
+from sqlalchemy import pool
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+
+from alembic import context
+
+# Make the ``app`` package importable regardless of the current working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.core.config import get_settings  # noqa: E402
+from app.core.database import build_database_url  # noqa: E402
+from app.models.models import Base  # noqa: E402
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# add your model's MetaData object here
+# for 'autogenerate' support
+target_metadata = Base.metadata
+
+
+def get_database_url() -> str:
+    """Return the PostgreSQL DSN from settings, falling back to ``alembic.ini``."""
+    settings = get_settings()
+    if settings.use_postgresql:
+        return build_database_url(settings)
+    url = config.get_main_option("sqlalchemy.url")
+    if not url or url.startswith("driver://"):
+        raise RuntimeError(
+            "No database URL configured: set USE_POSTGRESQL=True in backend/.env "
+            "or provide sqlalchemy.url in alembic.ini"
+        )
+    return url
+
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode.
+
+    This configures the context with just a URL
+    and not an Engine, though an Engine is acceptable
+    here as well.  By skipping the Engine creation
+    we don't even need a DBAPI to be available.
+
+    Calls to context.execute() here emit the given string to the
+    script output.
+
+    """
+    url = get_database_url()
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run_migrations(connection: AsyncConnection) -> None:
+    """Configure the migration context and run migrations on a sync connection."""
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_async_migrations() -> None:
+    """Create an async engine, run migrations and release the connection."""
+    connectable: AsyncEngine = create_async_engine(
+        get_database_url(),
+        poolclass=pool.NullPool,
+    )
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(do_run_migrations)
+    finally:
+        await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode.
+
+    In this scenario we need to create an Engine
+    and associate a connection with the context.
+
+    """
+    asyncio.run(run_async_migrations())
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
