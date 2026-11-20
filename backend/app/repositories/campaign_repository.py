@@ -8,22 +8,31 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-# Поправьте пути импорта под ваш проект.
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
 from app.core.exceptions import CampaignCreationError
 
 
 class CampaignRepository:
-    """
-    Сохраняет в локальную БД кампанию, её flows и связи flow -> offer.
+    """Repository for campaign CRUD operations and local synchronization.
 
-    Запись идёт одной транзакцией и является upsert-ом по keitaro_id. Это важно из-за
-    чекпоинта: если процесс упал после commit, но до записи шага в чекпоинт, повторный
-    вызов обновит те же строки, а не упадёт на unique(keitaro_id).
+    Handles all SQLAlchemy queries and transactions related to Campaign entities,
+    including flows and flow offer bindings. Uses async sessions with context
+    managers for automatic transaction handling via `session.begin()`.
+
+    All methods are async to support non-blocking I/O during database operations.
+    Session factory is injected at construction for reusing connection pooling.
+
+    Attributes:
+        _session_factory: Async session maker using shared engine from app state.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
-        self._session_factory = session_factory
+        """Initialize repository with SQLAlchemy session factory.
+
+        Args:
+            session_factory: Async session maker configured with engine and settings.
+        """
+        self._session_factory: async_sessionmaker[AsyncSession] = session_factory
 
     async def save_created_campaign(
         self,
@@ -37,7 +46,26 @@ class CampaignRepository:
         geo_flow: dict[str, Any],
         offer_flow: dict[str, Any],
     ) -> None:
-        now = datetime.now(timezone.utc)
+        """Persist a newly created campaign with its flows and offer bindings.
+
+        Atomically saves campaign entity, creates upserts for GEO and OFFER flows,
+        then attaches all offer bindings to the OFFER flow. Creates Offer stubs
+        if referenced offers don't exist locally yet. Marks flows as synced after save.
+
+        Uses transaction block with `session.begin()` for atomicity; rollback on error.
+
+        Args:
+            keitaro_id: Numeric ID of campaign from Keitaro response.
+            name: Display name for the campaign.
+            domain/group/traffic_source_keitaro_ids: Reference IDs for campaign metadata.
+            country_code: ISO 2-letter code for GEO flow targeting.
+            geo_flow: Dictionary containing GEO flow data (id, name, position).
+            offer_flow: Dictionary with OFFER flow data and list of offer bindings.
+
+        Raises:
+            CampaignCreationError: If Keitaro returns invalid flow IDs during save.
+        """
+        now: datetime = datetime.now(timezone.utc)
         async with self._session_factory() as session, session.begin():
             campaign = await self._get_by_keitaro_id(session, Campaign, keitaro_id)
             if campaign is None:
@@ -48,8 +76,7 @@ class CampaignRepository:
             campaign.group_keitaro_id = group_keitaro_id
             campaign.traffic_source_keitaro_id = traffic_source_keitaro_id
             campaign.fetched_at = now
-            await session.flush()  # нужен campaign.id для внешних ключей
-
+            await session.flush()
             await self._upsert_flow(
                 session, campaign, geo_flow, FlowType.GEO, country_code.upper(), now
             )
@@ -58,7 +85,18 @@ class CampaignRepository:
             flow.synced = True
 
     async def get_campaign_detail(self, keitaro_id: int) -> Campaign | None:
-        """Return a campaign with its flows and linked offers loaded."""
+        """Retrieve a campaign with all nested flows and offer bindings.
+
+        Executes a single SELECT with JOINs to load the complete campaign tree:
+        Campaign → Flows (GEO/OFFER) → FlowOffer bindings → Offer entities.
+        Uses selectinload for efficient eager loading of related data.
+
+        Args:
+            keitaro_id: Numeric ID of campaign to fetch.
+
+        Returns:
+            Full Campaign entity with flows and offers loaded, or None if not found.
+        """
         async with self._session_factory() as session:
             statement = (
                 select(Campaign)
@@ -73,7 +111,18 @@ class CampaignRepository:
             return result.scalar_one_or_none()
 
     async def get_local_campaign_streams(self) -> list[dict[str, Any]]:
-        """Return locally tracked campaigns and their Keitaro stream IDs."""
+        """Get tracked campaigns with their active flow IDs for sync operations.
+
+        Returns a filtered list of non-deleted campaigns and their non-deleted flows.
+        Used by FlowService to identify which campaign streams need synchronization.
+        Does not include offer bindings—only top-level flow references.
+
+        Args:
+            None
+
+        Returns:
+            List of dicts with keitaro_id and array of active flow objects (id, keitaro_id).
+        """
         async with self._session_factory() as session:
             statement = (
                 select(Campaign)
@@ -96,7 +145,20 @@ class CampaignRepository:
     async def sync_flow_offers_from_keitaro(
         self, flow_keitaro_id: int, items: list[dict[str, Any]]
     ) -> bool:
-        """Replace local links with the authoritative offer list returned by Keitaro."""
+        """Replace local offer bindings with authoritative data from Keitaro.
+
+        Implements pull sync: fetches current offers for a specific flow from Keitaro
+        response and updates the local FlowOffer entities accordingly. Creates Offer
+        stubs for offers not yet imported locally. Deletes bindings that no longer exist
+        in the remote list (Keitaro is source of truth for this direction).
+
+        Args:
+            flow_keitaro_id: Numeric ID of flow to update bindings for.
+            items: List of offer dicts from Keitaro with offer_id, share, and state.
+
+        Returns:
+            True if flow was found and bindings were updated; False if not found.
+        """
         now = datetime.now(timezone.utc)
         async with self._session_factory() as session, session.begin():
             flow = await self._get_by_keitaro_id(session, Flow, flow_keitaro_id)
@@ -107,10 +169,13 @@ class CampaignRepository:
             offers = []
             if offer_ids:
                 offers = (
-                    await session.execute(select(Offer).where(Offer.keitaro_id.in_(offer_ids)))
-                ).scalars().all()
+                    (await session.execute(select(Offer).where(Offer.keitaro_id.in_(offer_ids))))
+                    .scalars()
+                    .all()
+                )
             offers_by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
 
+            # Create stubs for missing offers (sync must load their full data later)
             for missing_id in sorted(set(offer_ids) - offers_by_keitaro_id.keys()):
                 offer = Offer(keitaro_id=missing_id, name=f"Offer {missing_id}", synced=True)
                 session.add(offer)
@@ -119,8 +184,10 @@ class CampaignRepository:
                 await session.flush()
 
             existing_links = (
-                await session.execute(select(FlowOffer).where(FlowOffer.flow_id == flow.id))
-            ).scalars().all()
+                (await session.execute(select(FlowOffer).where(FlowOffer.flow_id == flow.id)))
+                .scalars()
+                .all()
+            )
             links_by_offer_id = {link.offer_id: link for link in existing_links}
             remote_offer_ids: set[Any] = set()
 
@@ -137,7 +204,7 @@ class CampaignRepository:
                 link.synced = True
                 link.deleted = False
 
-            # Keitaro is the source of truth for this direction, including an empty list.
+            # Remove bindings not present in Keitaro response (physical delete, not soft)
             for link in existing_links:
                 if link.offer_id not in remote_offer_ids:
                     await session.delete(link)
@@ -148,12 +215,27 @@ class CampaignRepository:
             return True
 
     async def get_flows_pending_sync(self) -> list[Flow]:
-        """Load flows whose associations (or the flow itself) need pushing to Keitaro."""
+        """Fetch OFFER flows needing push sync to Keitaro.
+
+        Returns flows where either Flow.synced=False or any FlowOffer.binding
+        has synced=False. Excludes GEO flows and soft-deleted flows. Uses EXISTS
+        subquery to find flows with dirty bindings without full JOINs.
+
+        Args:
+            None
+
+        Returns:
+            List of Flow entities with nested offers loaded for payload building.
+        """
         async with self._session_factory() as session:
-            dirty_link = select(FlowOffer.id).where(
-                FlowOffer.flow_id == Flow.id,
-                FlowOffer.synced.is_(False),
-            ).exists()
+            dirty_link = (
+                select(FlowOffer.id)
+                .where(
+                    FlowOffer.flow_id == Flow.id,
+                    FlowOffer.synced.is_(False),
+                )
+                .exists()
+            )
             statement = (
                 select(Flow)
                 .where(Flow.deleted.is_(False), Flow.type == FlowType.OFFER)
@@ -164,11 +246,17 @@ class CampaignRepository:
             return list((await session.execute(statement)).scalars().unique().all())
 
     async def mark_flow_synced(self, flow_id) -> None:
+        """Mark a flow and all its offer bindings as synced after successful Keitaro update.
+
+        Sets Flow.synced=True and resets all child FlowOffer.synced flags to True.
+        Used after pushing updated offers to Keitaro API returns success response.
+
+        Args:
+            flow_id: Local UUID of the flow to mark as synced.
+        """
         async with self._session_factory() as session, session.begin():
             flow = await session.scalar(
-                select(Flow)
-                .where(Flow.id == flow_id)
-                .options(selectinload(Flow.offers))
+                select(Flow).where(Flow.id == flow_id).options(selectinload(Flow.offers))
             )
             if flow is None:
                 return
@@ -181,6 +269,19 @@ class CampaignRepository:
 
     @staticmethod
     async def _get_by_keitaro_id(session: AsyncSession, model, keitaro_id: int):
+        """Fetch single entity by Keitaro numeric ID.
+
+        Generic helper used throughout repository to look up Campaign, Flow, or Offer
+        by their external identifier. Avoids repeating select() + where() patterns.
+
+        Args:
+            session: Active SQLAlchemy async session.
+            model: SQLAlchemy ORM class (Campaign, Flow, or Offer).
+            keitaro_id: External numeric ID from Keitaro.
+
+        Returns:
+            Entity instance if found, None otherwise.
+        """
         result = await session.execute(select(model).where(model.keitaro_id == keitaro_id))
         return result.scalar_one_or_none()
 
@@ -193,6 +294,26 @@ class CampaignRepository:
         country: str | None,
         now: datetime,
     ) -> Flow:
+        """Create or update a flow entity from Keitaro response data.
+
+        Implements upsert pattern: checks if flow exists by keitaro_id, creates if not,
+        then overwrites all fields except id (UUID). Validates that returned ID is valid
+        integer > 0; raises CampaignCreationError otherwise.
+
+        Args:
+            session: Active SQLAlchemy async session.
+            campaign: Parent Campaign entity for relationship assignment.
+            data: Dictionary of flow attributes from Keitaro API response.
+            flow_type: Enum classification (GEO or OFFER).
+            country: Country code for GEO flows, None for OFFER flows.
+            now: Timestamp to set on fetched_at field.
+
+        Returns:
+            Flow entity created or updated.
+
+        Raises:
+            CampaignCreationError: If Keitaro returns invalid flow ID.
+        """
         keitaro_id = data.get("id") if isinstance(data, dict) else None
         if not isinstance(keitaro_id, int) or keitaro_id <= 0:
             raise CampaignCreationError(f"Keitaro did not return a valid {flow_type.value} flow id")
@@ -216,6 +337,17 @@ class CampaignRepository:
     async def _upsert_flow_offers(
         self, session: AsyncSession, flow: Flow, items: list[dict[str, Any]]
     ) -> None:
+        """Attach or update offer bindings for a flow.
+
+        Upserts FlowOffer entities linking the flow to offers referenced in Keitaro response.
+        Creates Offer stubs if references don't exist locally yet (full data loaded later).
+        Marks all new/updated bindings as synced and non-deleted. Ignores empty items list.
+
+        Args:
+            session: Active SQLAlchemy async session.
+            flow: Parent Flow entity to attach bindings to.
+            items: List of dicts with offer_id, share, state from Keitaro response.
+        """
         if not items:
             return
 
@@ -227,16 +359,14 @@ class CampaignRepository:
         )
         offers_by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
 
-        # Оффера может ещё не быть локально (синхронизация не отработала). В ответе Keitaro
-        # имени нет, а Offer.name обязателен, поэтому создаём заглушку. fetched_at=None
-        # помечает строку как «ещё не загружена из Keitaro»: имя подтянет синхронизация.
+        # Create stubs for offers not yet locally synced (name will be populated later)
         missing = sorted(set(keitaro_ids) - offers_by_keitaro_id.keys())
         for keitaro_id in missing:
             offer = Offer(keitaro_id=keitaro_id, name=f"Offer {keitaro_id}", synced=True)
             session.add(offer)
             offers_by_keitaro_id[keitaro_id] = offer
         if missing:
-            await session.flush()  # нужны offer.id для внешних ключей
+            await session.flush()  # Need offer.id for foreign keys
 
         existing = (
             (await session.execute(select(FlowOffer).where(FlowOffer.flow_id == flow.id)))
@@ -260,6 +390,17 @@ class CampaignRepository:
 
     @staticmethod
     def _to_text(value: Any) -> str | None:
+        """Convert JSON-serializable value to string for Text column.
+
+        Used for flow.action_payload which is TEXT type. Returns as-is if string or None,
+        otherwise JSON-encodes the object with ASCII=False for UTF-8 safety.
+
+        Args:
+            value: Any value (dict, list, str, or None).
+
+        Returns:
+            String representation or original string/None unchanged.
+        """
         if value is None or isinstance(value, str):
             return value
         return json.dumps(value, ensure_ascii=False)
