@@ -4,7 +4,8 @@ from datetime import datetime
 from typing import Literal, LiteralString
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.schemas.base import Base
+from pydantic import BaseModel, Field, field_validator
 
 
 class KTCampaignCreateRequest(BaseModel):
@@ -68,7 +69,7 @@ class CampaignCreatePayload(BaseModel):
         return value
 
 
-class KTCampaignCreateResponse(BaseModel):
+class KTCampaignCreateResponse(Base):
     """Response from campaign creation endpoint.
 
     Indicates successful creation with campaign ID, prefixed name, and confirmation message.
@@ -81,7 +82,7 @@ class KTCampaignCreateResponse(BaseModel):
     message: str
 
 
-class CampaignOfferDetailResponse(BaseModel):
+class CampaignOfferDetailResponse(Base):
     """Offer details embedded in flow bindings within a campaign.
 
     Contains minimal offer metadata required for display and binding operations.
@@ -93,7 +94,7 @@ class CampaignOfferDetailResponse(BaseModel):
     name: str
 
 
-class CampaignFlowOfferDetailResponse(BaseModel):
+class CampaignFlowOfferDetailResponse(Base):
     """Detailed flow-offer binding within a campaign flow.
 
     Represents a single offer attached to a flow with traffic share percentage
@@ -111,7 +112,7 @@ class CampaignFlowOfferDetailResponse(BaseModel):
         return value.value if hasattr(value, "value") else str(value)
 
 
-class CampaignFlowDetailResponse(BaseModel):
+class CampaignFlowDetailResponse(Base):
     """Complete flow/stream details within a campaign.
 
     Includes all flow configuration (type, position, schema/action) and nested
@@ -138,7 +139,7 @@ class CampaignFlowDetailResponse(BaseModel):
         return value.value if hasattr(value, "value") else str(value)
 
 
-class CampaignDetailResponse(BaseModel):
+class CampaignDetailResponse(Base):
     """Complete campaign details with flows and nested offer bindings.
 
     Top-level response for GET /api/v1/campaigns/{campaign_id} including all

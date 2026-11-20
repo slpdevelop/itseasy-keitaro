@@ -1,11 +1,12 @@
 from datetime import datetime
 from uuid import UUID
 
+from app.schemas.base import Base
 from pydantic import BaseModel, ConfigDict, Field
 
 
 # Kept for existing campaign-related schemas/API compatibility.
-class OfferResponse(BaseModel):
+class OfferResponse(Base):
     """Minimal offer response for legacy campaign-offer operations.
 
     Contains only essential fields (id and name) used in older endpoints
@@ -17,7 +18,7 @@ class OfferResponse(BaseModel):
     name: str
 
 
-class OfferListResponse(BaseModel):
+class OfferListResponse(Base):
     """Paginated response for offer listing endpoints.
 
     Contains array of OfferResponse objects and total count for UI pagination.
@@ -28,7 +29,7 @@ class OfferListResponse(BaseModel):
     total: int
 
 
-class CampaignOffersResponse(BaseModel):
+class CampaignOffersResponse(Base):
     """Offers response scoped to a specific campaign.
 
     Returns list of offers configured within a campaign's flow bindings.
@@ -53,7 +54,7 @@ class CampaignOffersUpdate(BaseModel):
     offer_ids: list[int] = Field(min_length=1)
 
 
-class CampaignOffersUpdateResponse(BaseModel):
+class CampaignOffersUpdateResponse(Base):
     """Response after updating campaign offer bindings.
 
     Reports added and removed offer IDs along with total count for confirmation.
@@ -79,7 +80,7 @@ class OfferCreateRequest(BaseModel):
     keitaro_id: int = Field(gt=0)
 
 
-class LocalOfferResponse(BaseModel):
+class LocalOfferResponse(Base):
     """Detailed local offer record from database with tracking metadata.
 
     Represents an offer imported and stored locally with sync flags, timestamps,
@@ -102,7 +103,7 @@ class LocalOfferResponse(BaseModel):
         return ["id", "keitaro_id", "name", "synced", "deleted", "created_at", "updated_at"]
 
 
-class LocalOfferListResponse(BaseModel):
+class LocalOfferListResponse(Base):
     """Paginated response listing all local offer records.
 
     Used by GET /api/v1/offers/local endpoint with optional include_deleted parameter.
@@ -113,7 +114,7 @@ class LocalOfferListResponse(BaseModel):
     total: int
 
 
-class OfferDeleteResponse(BaseModel):
+class OfferDeleteResponse(Base):
     """Response confirming local offer soft-deletion.
 
     Indicates the offer record is marked as deleted locally but remains in database.
@@ -124,7 +125,7 @@ class OfferDeleteResponse(BaseModel):
     deleted: bool
 
 
-class OfferRestoreResponse(BaseModel):
+class OfferRestoreResponse(Base):
     """Response confirming restoration of a soft-deleted offer.
 
     Indicates the offer is restored to active state with synced flag reset.
