@@ -144,14 +144,18 @@ class CampaignRepository:
             ]
 
     async def sync_flow_offers_from_keitaro(
-        self, flow_keitaro_id: int, items: list[dict[str, Any]]
+        self,
+        flow_keitaro_id: int,
+        items: list[dict[str, Any]],
+        *,
+        offer_names: dict[int, str] | None = None,
     ) -> bool:
         """Replace local offer bindings with authoritative data from Keitaro.
 
         Implements pull sync: fetches current offers for a specific flow from Keitaro
         response and updates the local FlowOffer entities accordingly. Creates Offer
-        stubs for offers not yet imported locally. Deletes bindings that no longer exist
-        in the remote list (Keitaro is source of truth for this direction).
+        stubs for offers not yet imported locally. Bindings missing from the remote list
+        are soft-deleted, matching the UI deletion behavior and preserving their history.
 
         Args:
             flow_keitaro_id: Numeric ID of flow to update bindings for.
@@ -175,12 +179,22 @@ class CampaignRepository:
                     .all()
                 )
             offers_by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
+            offer_names = offer_names or {}
 
-            # Create stubs for missing offers (sync must load their full data later)
+            # Create records for unknown offers, using the real Keitaro name
+            # whenever the service was able to resolve it.
             for missing_id in sorted(set(offer_ids) - offers_by_keitaro_id.keys()):
-                offer = Offer(keitaro_id=missing_id, name=f"Offer {missing_id}", synced=True)
+                name = offer_names.get(missing_id) or f"Offer {missing_id}"
+                offer = Offer(keitaro_id=missing_id, name=name, synced=True)
                 session.add(offer)
                 offers_by_keitaro_id[missing_id] = offer
+
+            # Earlier versions could have stored placeholder names. Replace those
+            # with the current name returned by Keitaro.
+            for keitaro_id, name in offer_names.items():
+                offer = offers_by_keitaro_id.get(keitaro_id)
+                if offer is not None and name.strip():
+                    offer.name = name.strip()
             if offer_ids:
                 await session.flush()
 
@@ -205,10 +219,15 @@ class CampaignRepository:
                 link.synced = True
                 link.deleted = False
 
-            # Remove bindings not present in Keitaro response (physical delete, not soft)
+            # Keep bindings that disappeared from Keitaro, but mark them as deleted.
+            # This mirrors UI deletion: the relation remains in the database and can
+            # still be displayed/restored instead of being physically removed.
             for link in existing_links:
                 if link.offer_id not in remote_offer_ids:
-                    await session.delete(link)
+                    link.deleted = True
+                    link.share = 0
+                    link.pinned = False
+                    link.synced = True
 
             flow.synced = True
             flow.fetched_at = now

@@ -144,6 +144,10 @@ class FlowService:
             "errors": [],
         }
 
+        # Cache names for this synchronization run so the same offer used in
+        # several flows is requested from Keitaro only once.
+        offer_names: dict[int, str] = {}
+
         for campaign in campaigns:
             campaign_id = campaign["keitaro_id"]
             try:
@@ -161,7 +165,24 @@ class FlowService:
                     continue
                 try:
                     items = self._validate_remote_offers(remote_flow["offers"])
-                    synced = await self.repository.sync_flow_offers_from_keitaro(flow_id, items)
+
+                    # Pull sync can encounter offers that were never imported locally,
+                    # or placeholder records created by an earlier sync. Resolve their
+                    # real display names from Keitaro instead of persisting "Offer 123".
+                    for offer_id in {item["offer_id"] for item in items}:
+                        if offer_id in offer_names:
+                            continue
+                        try:
+                            details = await self.gateway.get_offer_details(offer_id)
+                        except Exception:
+                            details = None
+                        name = details.get("name") if isinstance(details, dict) else None
+                        if isinstance(name, str) and name.strip():
+                            offer_names[offer_id] = name.strip()
+
+                    synced = await self.repository.sync_flow_offers_from_keitaro(
+                        flow_id, items, offer_names=offer_names
+                    )
                     if synced:
                         result["flows_synced"] += 1
                 except Exception as exc:
