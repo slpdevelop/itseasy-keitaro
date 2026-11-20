@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     campaign_traffic_source_id: int = Field(default=836, gt=0)
     """Default Keitaro traffic source ID for new campaigns (default: 836)."""
 
-    postgres_url: SecretStr | NonNegativeFloat = None
-    """PostgreSQL server connection url."""
+    # Local PostgreSQL storage configuration
+    postgres_db_url: SecretStr
 
     # CORS configuration
     cors_allowed_origins: list[str] = Field(
@@ -151,4 +151,24 @@ def get_settings() -> Settings:
         Single shared Settings instance with validated configuration.
     """
     settings = Settings()
+    validate_settings(settings)
     return settings
+
+
+def validate_settings(settings: Settings) -> None:
+    """Perform application-level validation after Pydantic parsing.
+
+    Checks production mode requirements that are not enforced during initialization.
+    Raises ConfigurationError with descriptive messages if validation fails.
+
+    Args:
+        settings: Parsed Settings instance to validate.
+
+    Raises:
+        ConfigurationError: If production is enabled without API token.
+    """
+    errors: list[str] = []
+    if settings.env == "production" and not settings.keitaro_api_token.get_secret_value():
+        errors.append("KEITARO_API_TOKEN is required in production")
+    if errors:
+        raise ConfigurationError(errors)

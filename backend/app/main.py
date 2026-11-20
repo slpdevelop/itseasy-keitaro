@@ -47,7 +47,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     """
     settings: Settings = application.state.settings
 
-    db_engine: AsyncEngine = create_database_engine()
+    db_engine: AsyncEngine = create_database_engine(settings)
     application.state.db_engine = db_engine
 
     client = httpx.AsyncClient(

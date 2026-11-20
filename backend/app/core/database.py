@@ -3,12 +3,12 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.core.config import settings
+from app.core.config import Settings
 
 
-def create_database_engine() -> AsyncEngine:
+def create_database_engine(settings: Settings) -> AsyncEngine:
     return create_async_engine(
-        settings.database_url,
+        settings.postgres_db_url.get_secret_value(),
         echo=False,
         pool_pre_ping=True,
     )

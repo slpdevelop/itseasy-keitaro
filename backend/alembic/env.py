@@ -19,7 +19,6 @@ from alembic import context
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import get_settings  # noqa: E402
-from app.core.database import build_database_url  # noqa: E402
 from app.models.models import Base  # noqa: E402
 
 # this is the Alembic Config object, which provides
@@ -39,15 +38,7 @@ target_metadata = Base.metadata
 def get_database_url() -> str:
     """Return the PostgreSQL DSN from settings, falling back to ``alembic.ini``."""
     settings = get_settings()
-    if settings.use_postgresql:
-        return build_database_url(settings)
-    url = config.get_main_option("sqlalchemy.url")
-    if not url or url.startswith("driver://"):
-        raise RuntimeError(
-            "No database URL configured: set USE_POSTGRESQL=True in backend/.env "
-            "or provide sqlalchemy.url in alembic.ini"
-        )
-    return url
+    return settings.postgres_db_url.get_secret_value()
 
 
 def run_migrations_offline() -> None:

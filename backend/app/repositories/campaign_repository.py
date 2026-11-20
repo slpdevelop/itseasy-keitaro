@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
 from app.core.exceptions import CampaignCreationError
+from sqlalchemy.sql.selectable import Select
 
 
 class CampaignRepository:
@@ -98,7 +99,7 @@ class CampaignRepository:
             Full Campaign entity with flows and offers loaded, or None if not found.
         """
         async with self._session_factory() as session:
-            statement = (
+            query: Select[tuple[Campaign]] = (
                 select(Campaign)
                 .where(Campaign.keitaro_id == keitaro_id)
                 .options(
@@ -107,7 +108,7 @@ class CampaignRepository:
                     .selectinload(FlowOffer.offer)
                 )
             )
-            result = await session.execute(statement)
+            result = await session.execute(query)
             return result.scalar_one_or_none()
 
     async def get_local_campaign_streams(self) -> list[dict[str, Any]]:
@@ -124,12 +125,12 @@ class CampaignRepository:
             List of dicts with keitaro_id and array of active flow objects (id, keitaro_id).
         """
         async with self._session_factory() as session:
-            statement = (
+            query = (
                 select(Campaign)
                 .where(Campaign.deleted.is_(False))
                 .options(selectinload(Campaign.flows))
             )
-            campaigns = (await session.execute(statement)).scalars().unique().all()
+            campaigns = (await session.execute(query)).scalars().unique().all()
             return [
                 {
                     "keitaro_id": campaign.keitaro_id,
@@ -236,14 +237,14 @@ class CampaignRepository:
                 )
                 .exists()
             )
-            statement = (
+            query = (
                 select(Flow)
                 .where(Flow.deleted.is_(False), Flow.type == FlowType.OFFER)
                 .where(or_(Flow.synced.is_(False), dirty_link))
                 .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
                 .order_by(Flow.keitaro_id)
             )
-            return list((await session.execute(statement)).scalars().unique().all())
+            return list((await session.execute(query)).scalars().unique().all())
 
     async def mark_flow_synced(self, flow_id) -> None:
         """Mark a flow and all its offer bindings as synced after successful Keitaro update.

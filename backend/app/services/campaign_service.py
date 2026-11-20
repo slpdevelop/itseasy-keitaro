@@ -3,10 +3,9 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from app.core.exceptions import CampaignCreationError, CampaignNotFoundError, InvalidRequestError
-from app.interfaces.campaign_gateway import CampaignGateway
 from app.models.models import Campaign
 from app.schemas.campaign import (
     CampaignCreatePayload,
@@ -15,12 +14,8 @@ from app.schemas.campaign import (
     CampaignDetailResponse,
 )
 from app.services.flow_service import FlowService
-
-if TYPE_CHECKING:
-    from app.services.flow_service import FlowService
-    from app.interfaces.campaign_gateway import CampaignGateway
-    from app.repositories.campaign_repository import CampaignRepository
-    from app.core.config import Settings
+from app.repositories.campaign_repository import CampaignRepository
+from app.core.config import Settings
 
 logger: logging.Logger = logging.getLogger(__name__)
 
