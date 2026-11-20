@@ -149,6 +149,7 @@ class CampaignRepository:
         items: list[dict[str, Any]],
         *,
         offer_names: dict[int, str] | None = None,
+        conflicts: list[int] | None = None,
     ) -> bool:
         """Replace local offer bindings with authoritative data from Keitaro.
 
@@ -157,9 +158,17 @@ class CampaignRepository:
         stubs for offers not yet imported locally. Bindings missing from the remote list
         are soft-deleted, matching the UI deletion behavior and preserving their history.
 
+        Local changes that have not been pushed yet (FlowOffer.synced=False) are never
+        overwritten: the local version wins until it is pushed with sync-to-keitaro.
+        A pending binding that already matches Keitaro is simply marked as synced.
+        Pending bindings that differ from Keitaro are reported through ``conflicts``.
+
         Args:
             flow_keitaro_id: Numeric ID of flow to update bindings for.
             items: List of offer dicts from Keitaro with offer_id, share, and state.
+            offer_names: Optional Keitaro offer names used to replace placeholders.
+            conflicts: Optional output list; Keitaro IDs of offers whose pending local
+                changes were kept instead of being overwritten are appended to it.
 
         Returns:
             True if flow was found and bindings were updated; False if not found.
@@ -199,23 +208,43 @@ class CampaignRepository:
                 await session.flush()
 
             existing_links = (
-                (await session.execute(select(FlowOffer).where(FlowOffer.flow_id == flow.id)))
+                (
+                    await session.execute(
+                        select(FlowOffer)
+                        .options(selectinload(FlowOffer.offer))
+                        .where(FlowOffer.flow_id == flow.id)
+                    )
+                )
                 .scalars()
                 .all()
             )
             links_by_offer_id = {link.offer_id: link for link in existing_links}
             remote_offer_ids: set[Any] = set()
+            conflicts = conflicts if conflicts is not None else []
 
             for item in items:
                 offer = offers_by_keitaro_id[int(item["offer_id"])]
                 remote_offer_ids.add(offer.id)
+                remote_share = int(item["share"])
+                remote_state = FlowOfferState(item.get("state") or FlowOfferState.ACTIVE.value)
                 link = links_by_offer_id.get(offer.id)
                 if link is None:
                     link = FlowOffer(flow_id=flow.id, offer_id=offer.id)
                     session.add(link)
                     links_by_offer_id[offer.id] = link
-                link.share = int(item["share"])
-                link.state = FlowOfferState(item.get("state") or FlowOfferState.ACTIVE.value)
+                elif link.synced is False:
+                    # Unpushed local edit: do not overwrite it with the remote copy.
+                    if (link.deleted, link.share, link.state) == (
+                        False,
+                        remote_share,
+                        remote_state,
+                    ):
+                        link.synced = True  # local edit equals the remote state
+                    else:
+                        conflicts.append(offer.keitaro_id)
+                    continue
+                link.share = remote_share
+                link.state = remote_state
                 link.synced = True
                 link.deleted = False
 
@@ -223,13 +252,23 @@ class CampaignRepository:
             # This mirrors UI deletion: the relation remains in the database and can
             # still be displayed/restored instead of being physically removed.
             for link in existing_links:
-                if link.offer_id not in remote_offer_ids:
-                    link.deleted = True
-                    link.share = 0
-                    link.pinned = False
-                    link.synced = True
+                if link.offer_id in remote_offer_ids:
+                    continue
+                if link.synced is False:
+                    # Pending local change. A binding added locally and not pushed yet
+                    # is absent in Keitaro by definition and must not be dropped.
+                    if link.deleted:
+                        link.synced = True  # local deletion already matches Keitaro
+                    else:
+                        conflicts.append(link.offer.keitaro_id)
+                    continue
+                link.deleted = True
+                link.share = 0
+                link.pinned = False
+                link.synced = True
 
-            flow.synced = True
+            # The flow stays "pending" while any of its bindings still has local edits.
+            flow.synced = not any(link.synced is False for link in links_by_offer_id.values())
             flow.fetched_at = now
             await session.flush()
             return True
@@ -240,12 +279,22 @@ class CampaignRepository:
         The path identifier is the local Flow UUID. Offer identifiers in the
         payload are numeric Keitaro IDs. Shares are normalized to integer
         percentages that total exactly 100 across non-deleted bindings.
+
+        Sync flags: a binding (and its flow) is marked ``synced=False`` only when
+        something Keitaro actually stores has changed: the binding is new, or its
+        share, state or deleted flag differs from the value before this call.
+        ``pinned`` is local-only metadata (it is not sent to Keitaro), so changing it
+        alone does not create a pending sync. A flag is never set back to True here;
+        bindings that were already pending stay pending.
         """
         async with self._session_factory() as session, session.begin():
+            # Lock the flow row so a concurrent push (mark_flow_synced) cannot
+            # interleave with this read-modify-write.
             flow = await session.scalar(
                 select(Flow)
                 .where(Flow.id == flow_id, Flow.deleted.is_(False))
                 .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
+                .with_for_update(of=Flow)
             )
             if flow is None:
                 return None
@@ -272,6 +321,12 @@ class CampaignRepository:
                 await session.flush()
 
             links_by_offer_id = {link.offer_id: link for link in flow.offers}
+            # What Keitaro-visible fields looked like before this update.
+            # Keyed by the local Offer UUID: a binding created in this call has no
+            # offer_id yet (it is only populated on flush), but always has link.offer.
+            before = {
+                link.offer.id: (link.share, link.state, link.deleted) for link in flow.offers
+            }
             incoming_local_ids = set()
             for item in items:
                 offer = by_keitaro_id[int(item["offer_id"])]
@@ -290,21 +345,24 @@ class CampaignRepository:
                 state = item.get("state") or FlowOfferState.ACTIVE.value
                 is_deleted = bool(item.get("deleted", False)) or state == "deleted"
                 if state == "deleted":
-                    state = FlowOfferState.ACTIVE.value
+                    # "deleted" is a legacy way to say deleted=True. It is not a real
+                    # state, so keep the binding's own state (active/disabled) instead
+                    # of silently turning a disabled offer into an active one.
+                    current_state = link.state or FlowOfferState.ACTIVE
+                    state = current_state.value
                 if state not in {FlowOfferState.ACTIVE.value, FlowOfferState.DISABLED.value}:
                     raise ValueError(f"Invalid offer state: {state}")
                 link.state = FlowOfferState(state)
                 link.deleted = is_deleted
                 link.share = 0 if link.deleted else int(item.get("share", 0))
                 link.pinned = False if link.deleted else bool(item.get("pinned", False))
-                link.synced = False
 
             # Bindings omitted from the submitted full list are retained as deleted.
             for link in flow.offers:
-                if link.offer_id not in incoming_local_ids:
+                if link.offer.id not in incoming_local_ids:
                     link.deleted = True
                     link.share = 0
-                    link.synced = False
+                    link.pinned = False
 
             active_links = [link for link in links_by_offer_id.values() if not link.deleted]
             pinned_links = [link for link in active_links if link.pinned]
@@ -322,7 +380,16 @@ class CampaignRepository:
                 for index, link in enumerate(unpinned_links):
                     link.share = base + (1 if index >= remainder_start else 0)
 
-            flow.synced = False
+            # Mark as pending only what really differs from the pre-update state
+            # (this also covers shares redistributed among unpinned offers).
+            changed = False
+            for link in flow.offers:
+                previous = before.get(link.offer.id)
+                if previous is None or previous != (link.share, link.state, link.deleted):
+                    link.synced = False
+                    changed = True
+            if changed:
+                flow.synced = False
             await session.flush()
             return flow
 
@@ -357,25 +424,53 @@ class CampaignRepository:
             )
             return list((await session.execute(query)).scalars().unique().all())
 
-    async def mark_flow_synced(self, flow_id) -> None:
-        """Mark a flow and all its offer bindings as synced after successful Keitaro update.
+    async def mark_flow_synced(
+        self,
+        flow_id,
+        pushed: dict[Any, tuple[int, str, bool]] | None = None,
+    ) -> bool:
+        """Mark a flow and its offer bindings as synced after a successful push.
 
-        Sets Flow.synced=True and resets all child FlowOffer.synced flags to True.
-        Used after pushing updated offers to Keitaro API returns success response.
+        ``pushed`` is the snapshot that was actually sent to Keitaro:
+        ``{FlowOffer.id: (share, state_value, deleted)}``. A binding is confirmed as
+        synced only if it still has exactly these values. A binding edited (or created)
+        while the PUT request was in flight stays ``synced=False`` and is picked up by
+        the next push, instead of being marked as sent when it was not.
+
+        The flow is marked synced only when none of its bindings remained pending.
+        Without ``pushed`` every binding is confirmed (legacy behaviour).
 
         Args:
-            flow_id: Local UUID of the flow to mark as synced.
+            flow_id: Local UUID of the flow that was pushed.
+            pushed: Snapshot of the pushed bindings, keyed by FlowOffer.id.
+
+        Returns:
+            True if the flow is fully synced after this call, False if some bindings
+            changed during the push and are still pending (or the flow no longer exists).
         """
         async with self._session_factory() as session, session.begin():
             flow = await session.scalar(
-                select(Flow).where(Flow.id == flow_id).options(selectinload(Flow.offers))
+                select(Flow)
+                .where(Flow.id == flow_id)
+                .options(selectinload(Flow.offers))
+                .with_for_update(of=Flow)
             )
             if flow is None:
-                return
-            flow.synced = True
+                return False
+            fully_synced = True
             for link in flow.offers:
-                link.synced = True
+                if pushed is not None and pushed.get(link.id) != (
+                    link.share,
+                    link.state.value,
+                    link.deleted,
+                ):
+                    link.synced = False
+                    fully_synced = False
+                else:
+                    link.synced = True
+            flow.synced = fully_synced
             await session.flush()
+            return fully_synced
 
     # ------------------------------------------------------------------ helpers
 

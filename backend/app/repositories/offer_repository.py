@@ -83,25 +83,26 @@ class OfferRepository:
             result = await session.execute(select(Offer).where(Offer.keitaro_id == keitaro_id))
             return result.scalar_one_or_none()
 
-    async def create(self, *, keitaro_id: int, name: str) -> Offer:
+    async def create(self, *, keitaro_id: int, name: str, synced: bool = False) -> Offer:
         """Create a new offer record in the local database.
 
         Used when importing offers from Keitaro that don't exist locally yet.
-        Marks the entity as not synced (synced=False) since it needs to fetch
-        full details and validate against upstream data later.
+        Defaults to synced=False; callers that have already validated the offer
+        against Keitaro (OfferService.add_offer) pass synced=True.
 
         Args:
             keitaro_id: External numeric ID to assign to the new offer.
             name: Display name for the offer.
+            synced: Whether the record is known to match Keitaro. Default False.
 
         Returns:
-            Created Offer entity with database-assigned UUID. Synced=False initially.
+            Created Offer entity with database-assigned UUID.
         """
         async with self._session_factory() as session, session.begin():
             offer = Offer(
                 keitaro_id=keitaro_id,
                 name=name,
-                synced=False,
+                synced=synced,
                 deleted=False,
             )
             session.add(offer)
@@ -109,16 +110,20 @@ class OfferRepository:
             await session.refresh(offer)
             return offer
 
-    async def set_deleted(self, offer_id: UUID, *, deleted: bool) -> Offer | None:
+    async def set_deleted(
+        self, offer_id: UUID, *, deleted: bool, synced: bool | None = None
+    ) -> Offer | None:
         """Update soft-delete flag for an offer and sync state accordingly.
 
         When restoring a deleted offer (deleted=False), automatically marks it as
         unsynced since its current state must be re-validated against Keitaro before
-        pushing changes back. Deletion does not affect synced flag.
+        pushing changes back. Deletion does not affect synced flag. A caller that has
+        just validated the offer against Keitaro can override this with ``synced=True``.
 
         Args:
             offer_id: Local UUID of the offer to update.
             deleted: True to soft-delete, False to restore the offer.
+            synced: Optional explicit value for the synced flag on restore.
 
         Returns:
             Updated Offer entity with new deleted and synced values, or None if not found.
@@ -133,7 +138,7 @@ class OfferRepository:
 
             offer.deleted = deleted
             if not deleted:
-                offer.synced = False
+                offer.synced = False if synced is None else synced
 
             await session.flush()
             await session.refresh(offer)

@@ -180,6 +180,12 @@ class Offer(KeitaroEntityMixin, BaseModel):
 
     Attributes:
         name: Display name of the offer in Keitaro.
+
+    Note:
+        ``synced`` on an Offer only says that the local record was validated against
+        Keitaro (import/restore). It is informational: offers are never pushed, so it
+        does not feed the "pending sync" logic. That logic uses ``FlowOffer.synced``
+        and ``Flow.synced``.
     """
 
     __tablename__ = "offers"

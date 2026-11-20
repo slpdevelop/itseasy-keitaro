@@ -99,13 +99,16 @@ class OfferService:
         existing = await self.repository.get_by_keitaro_id(keitaro_id)
         if existing is not None:
             if existing.deleted:
-                restored = await self.repository.set_deleted(existing.id, deleted=False)
+                # The offer was fetched and validated against Keitaro just above.
+                restored = await self.repository.set_deleted(
+                    existing.id, deleted=False, synced=True
+                )
                 if restored is None:  # defensive: row may have been removed concurrently
                     raise OfferNotFoundError()
                 return restored
             return existing
 
-        return await self.repository.create(keitaro_id=keitaro_id, name=name.strip())
+        return await self.repository.create(keitaro_id=keitaro_id, name=name.strip(), synced=True)
 
     async def delete_offer(self, offer_id: UUID) -> Offer:
         """Soft-delete a local offer record (logical removal).

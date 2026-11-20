@@ -129,7 +129,11 @@ class FlowService:
         replaces local FlowOffer entities with authoritative remote values.
         Creates Offer stubs for offers not yet imported.
 
-        Returns statistics: campaigns_checked, flows_synced count, errors list, success flag.
+        Local edits that were not pushed yet (``synced=False``) are never overwritten.
+        They are skipped and reported in ``conflicts`` so the user can push them first.
+
+        Returns statistics: campaigns_checked, flows_synced count, errors list,
+        conflicts list, success flag.
 
         Args:
             None (uses locally tracked campaigns from repository)
@@ -142,6 +146,7 @@ class FlowService:
             "campaigns_checked": len(campaigns),
             "flows_synced": 0,
             "errors": [],
+            "conflicts": [],
         }
 
         # Cache names for this synchronization run so the same offer used in
@@ -180,11 +185,20 @@ class FlowService:
                         if isinstance(name, str) and name.strip():
                             offer_names[offer_id] = name.strip()
 
+                    flow_conflicts: list[int] = []
                     synced = await self.repository.sync_flow_offers_from_keitaro(
-                        flow_id, items, offer_names=offer_names
+                        flow_id, items, offer_names=offer_names, conflicts=flow_conflicts
                     )
                     if synced:
                         result["flows_synced"] += 1
+                    if flow_conflicts:
+                        result["conflicts"].append(
+                            {
+                                "campaign_id": campaign_id,
+                                "flow_id": flow_id,
+                                "offer_ids": sorted(set(flow_conflicts)),
+                            }
+                        )
                 except Exception as exc:
                     result["errors"].append(
                         {
@@ -201,9 +215,12 @@ class FlowService:
 
         Finds OFFER flows where Flow.synced=False or any FlowOffer.binding has synced=False.
         For each pending flow, builds offers payload excluding deleted bindings, sends PUT request,
-        then marks flow and all its bindings as synced. Aggregates errors but continues processing.
+        then confirms as synced exactly the bindings that were sent. Bindings edited while the
+        request was in flight stay pending and the flow is listed in ``flows_still_pending``.
+        Aggregates errors but continues processing.
 
-        Returns statistics: flows_checked, flows_synced count, errors list, success flag.
+        Returns statistics: flows_checked, flows_synced count, flows_still_pending list,
+        errors list, success flag.
 
         Args:
             None (queries repository for dirty flows)
@@ -215,10 +232,15 @@ class FlowService:
         result: dict[str, Any] = {
             "flows_checked": len(flows),
             "flows_synced": 0,
+            "flows_still_pending": [],
             "errors": [],
         }
 
         for flow in flows:
+            # Snapshot of exactly what is sent, so only these values get confirmed.
+            pushed = {
+                link.id: (link.share, link.state.value, link.deleted) for link in flow.offers
+            }
             offers = [
                 {
                     "offer_id": link.offer.keitaro_id,
@@ -230,8 +252,10 @@ class FlowService:
             ]
             try:
                 await self.gateway.update_flow_offers(flow.keitaro_id, offers)
-                await self.repository.mark_flow_synced(flow.id)
-                result["flows_synced"] += 1
+                if await self.repository.mark_flow_synced(flow.id, pushed):
+                    result["flows_synced"] += 1
+                else:
+                    result["flows_still_pending"].append(flow.keitaro_id)
             except Exception as exc:
                 result["errors"].append({"flow_id": flow.keitaro_id, "error": type(exc).__name__})
 
