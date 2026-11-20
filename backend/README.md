@@ -39,22 +39,24 @@ cp backend/.env.example backend/.env
 
 ## Запуск через Docker (рекомендуется)
 
-Весь стек (приложение + PostgreSQL) запускается одним командой:
+Весь стек (PostgreSQL + FastAPI backend + React frontend) запускается одной командой:
 
 ```bash
 cd backend
-docker compose up -d --build   # сборка образа и запуск приложения + БД
-docker compose ps              # оба сервиса должны быть healthy
-docker compose logs -f app     # логи приложения
+docker compose up -d --build   # сборка образов и запуск БД + backend + frontend
+docker compose ps              # все три сервиса должны быть healthy
+docker compose logs -f app     # логи backend
+docker compose logs -f frontend
 docker compose down            # остановить (данные БД сохраняются в volume)
 ```
 
-- Приложение: `http://localhost:8000` (health: `/health`, docs: `/docs`)
+- Backend (FastAPI): `http://localhost:8000` (health: `/health`, docs: `/docs`)
+- Frontend (React + Vite, nginx): `http://localhost:5173` — проксирует `/api` на backend
 - PostgreSQL: `localhost:5432`, база создаётся автоматически при старте
 - Настройки берутся из `backend/.env` (через `env_file`); секреты не попадают
   в образ (исключены через `.dockerignore`)
-- Порядок старта: PostgreSQL → healthcheck → приложение; приложение ждёт БД
-  и устанавливает подключение в `lifespan`
+- Порядок старта: PostgreSQL → healthcheck → backend (применяются Alembic-миграции,
+  затем стартует uvicorn) → frontend; frontend ждёт, пока backend станет healthy
 
 ## Запуск локально (без Docker для приложения)
 
@@ -106,23 +108,34 @@ pytest app/tests/ -v --cov=app --cov-report=html
 
 ```
 backend/
-├── app/
+├── app/                     # FastAPI приложение
 │   ├── main.py              # Точка входа FastAPI
-│   ├── api/
-│   │   └── v1/              # Маршруты API v1
-│   │       ├── router.py
-│   │       └── endpoints/
-│   │           └── health.py
-│   ├── core/
-│   │   ├── config.py        # Pydantic Settings
-│   │   ├── exceptions.py    # Обработчики исключений
-│   │   └── __init__.py
+│   ├── api/                 # Маршруты
+│   ├── core/                # Конфигурация, БД, исключения
+│   ├── integrations/        # Адаптеры Keitaro
+│   ├── interfaces/          # Protocol-контракты gateway
+│   ├── repositories/        # SQLAlchemy репозитории
+│   ├── schemas/             # Pydantic схемы
+│   ├── services/            # Бизнес-сервисы
 │   └── tests/               # Тесты
-├── .env.example             # Пример конфигурации
+├── alembic/                 # Миграции БД
+├── .env.example             # Пример конфигурации (скопируйте в .env)
 ├── .env                     # Ваши секреты (не коммитить!)
-├── Dockerfile               # Образ приложения
-├── docker-compose.yml       # Стек: приложение + PostgreSQL
+├── .dockerignore
+├── Dockerfile               # Образ backend
+├── alembic.ini
+├── docker-compose.yml       # Стек: PostgreSQL + backend + frontend
 ├── pyproject.toml
+└── README.md
+
+frontend/
+├── src/                     # React + Vite исходники
+├── index.html
+├── .env                     # VITE_API_BASE_URL
+├── .dockerignore
+├── Dockerfile               # Сборка Vite + отдача через nginx
+├── nginx.conf               # Прокси /api на backend, SPA fallback
+├── package.json
 └── README.md
 ```
 

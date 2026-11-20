@@ -10,6 +10,9 @@ WORKDIR /app
 # Install dependencies first so source-only changes reuse this layer.
 COPY pyproject.toml ./
 COPY app ./app
+# Alembic configuration and migration scripts are needed to run `alembic upgrade head` at startup.
+COPY alembic.ini ./
+COPY alembic ./alembic
 
 RUN pip install .
 
