@@ -5,7 +5,7 @@ from typing import Literal, LiteralString
 from uuid import UUID
 
 from app.schemas.base import Base
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasPath, BaseModel, Field, field_validator
 
 
 class KTCampaignCreateRequest(BaseModel):
@@ -102,8 +102,13 @@ class CampaignFlowOfferDetailResponse(Base):
     """
 
     offer: CampaignOfferDetailResponse
+    offer_id: int = Field(validation_alias=AliasPath("offer", "keitaro_id"))
+    keitaro_id: int = Field(validation_alias=AliasPath("offer", "keitaro_id"))
+    name: str = Field(validation_alias=AliasPath("offer", "name"))
     share: int
     state: str
+    deleted: bool = False
+    synced: bool = False
 
     @field_validator("state", mode="before")
     @classmethod

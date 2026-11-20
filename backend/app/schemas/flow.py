@@ -57,3 +57,22 @@ class FlowCreate(BaseModel):
 
     filters: list[FlowFilter] | None = None
     offers: list[FlowOffer] | None = None
+
+
+class FlowOfferUpdate(BaseModel):
+    """Offer binding sent by the UI when editing an OFFER flow."""
+
+    offer_id: int = Field(gt=0)
+    share: float = Field(default=0, ge=0, le=100)
+    state: str = "active"
+    deleted: bool = False
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class FlowOffersUpdateRequest(BaseModel):
+    """Payload for replacing the local offer bindings of a flow."""
+
+    offers: list[FlowOfferUpdate]
+
+    model_config = ConfigDict(extra="ignore")

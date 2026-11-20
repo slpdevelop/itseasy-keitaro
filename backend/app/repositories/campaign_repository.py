@@ -215,6 +215,81 @@ class CampaignRepository:
             await session.flush()
             return True
 
+
+    async def update_flow_offers(self, flow_id, items: list[dict[str, Any]]) -> Flow | None:
+        """Persist flow offer bindings, including soft-delete and restore state.
+
+        The path identifier is the local Flow UUID. Offer identifiers in the
+        payload are numeric Keitaro IDs. Shares are normalized to integer
+        percentages that total exactly 100 across non-deleted bindings.
+        """
+        async with self._session_factory() as session, session.begin():
+            flow = await session.scalar(
+                select(Flow)
+                .where(Flow.id == flow_id, Flow.deleted.is_(False))
+                .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
+            )
+            if flow is None:
+                return None
+            if flow.type != FlowType.OFFER:
+                raise ValueError("Offers can only be changed on OFFER flows")
+
+            offer_ids = [int(item["offer_id"]) for item in items]
+            if len(offer_ids) != len(set(offer_ids)):
+                raise ValueError("Duplicate offer IDs are not allowed in one flow")
+
+            offers = []
+            if offer_ids:
+                offers = list((await session.execute(
+                    select(Offer).where(Offer.keitaro_id.in_(offer_ids))
+                )).scalars().all())
+            by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
+            for missing_id in sorted(set(offer_ids) - by_keitaro_id.keys()):
+                offer = Offer(keitaro_id=missing_id, name=f"Offer {missing_id}", synced=True)
+                session.add(offer)
+                by_keitaro_id[missing_id] = offer
+            if set(offer_ids) - {offer.keitaro_id for offer in offers}:
+                await session.flush()
+
+            links_by_offer_id = {link.offer_id: link for link in flow.offers}
+            incoming_local_ids = set()
+            for item in items:
+                offer = by_keitaro_id[int(item["offer_id"])]
+                incoming_local_ids.add(offer.id)
+                link = links_by_offer_id.get(offer.id)
+                if link is None:
+                    link = FlowOffer(offer_id=offer.id, share=0)
+                    flow.offers.append(link)
+                    links_by_offer_id[offer.id] = link
+                state = item.get("state") or FlowOfferState.ACTIVE.value
+                is_deleted = bool(item.get("deleted", False)) or state == "deleted"
+                if state == "deleted":
+                    state = FlowOfferState.ACTIVE.value
+                if state not in {FlowOfferState.ACTIVE.value, FlowOfferState.DISABLED.value}:
+                    raise ValueError(f"Invalid offer state: {state}")
+                link.state = FlowOfferState(state)
+                link.deleted = is_deleted
+                link.share = 0 if link.deleted else int(item.get("share", 0))
+                link.synced = False
+
+            # Bindings omitted from the submitted full list are retained as deleted.
+            for link in flow.offers:
+                if link.offer_id not in incoming_local_ids:
+                    link.deleted = True
+                    link.share = 0
+                    link.synced = False
+
+            active_links = [link for link in links_by_offer_id.values() if not link.deleted]
+            count = len(active_links)
+            if count:
+                base, remainder = divmod(100, count)
+                for index, link in enumerate(active_links):
+                    link.share = base + (1 if index < remainder else 0)
+
+            flow.synced = False
+            await session.flush()
+            return flow
+
     async def get_flows_pending_sync(self) -> list[Flow]:
         """Fetch OFFER flows needing push sync to Keitaro.
 

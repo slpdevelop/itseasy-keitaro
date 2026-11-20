@@ -254,3 +254,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         status_code=500,
         content={"error": {"code": "INTERNAL_SERVER_ERROR", "message": "Internal server error"}},
     )
+
+
+class FlowNotFoundError(AppError):
+    """Raised when a local flow UUID does not exist."""
+
+    status_code = 404
+    code = "FLOW_NOT_FOUND"
+    public_message = "Flow not found"

@@ -1,11 +1,14 @@
 from typing import Annotated
 
-from app.api.dependencies import CampaignServiceDep
+from uuid import UUID
+
+from app.api.dependencies import CampaignServiceDep, FlowServiceDep
 from app.schemas.campaign import (
     CampaignDetailResponse,
     KTCampaignCreateRequest,
     KTCampaignCreateResponse,
 )
+from app.schemas.flow import FlowOffersUpdateRequest
 from fastapi import APIRouter, Path, status
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
@@ -31,3 +34,20 @@ async def create_campaign(
 ) -> KTCampaignCreateResponse:
     """Create a new campaign with associated GEO and OFFER flows."""
     return await service.create_campaign(data)
+
+
+@router.put("/streams/{flow_id}")
+async def update_campaign_stream_offers(
+    flow_id: UUID,
+    data: FlowOffersUpdateRequest,
+    service: FlowServiceDep,
+) -> dict:
+    """Update local offer bindings for a campaign stream.
+
+    The operation only changes local state. Use POST /offers/sync/to-keitaro
+    to push pending changes to Keitaro.
+    """
+    return await service.update_flow_offers(
+        flow_id,
+        [item.model_dump() for item in data.offers],
+    )

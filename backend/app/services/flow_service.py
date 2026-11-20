@@ -78,6 +78,41 @@ class FlowService:
         )
         return await self.gateway.create_flow(offer_flow_data)
 
+
+    async def update_flow_offers(self, flow_id, offers: list[dict[str, Any]]) -> dict[str, Any]:
+        """Update local offer bindings for a flow and return normalized state."""
+        if len({item.get("offer_id") for item in offers}) != len(offers):
+            raise InvalidRequestError("An offer cannot be added to the same flow more than once")
+        for item in offers:
+            if not isinstance(item.get("offer_id"), int) or item["offer_id"] <= 0:
+                raise InvalidRequestError("Invalid Keitaro offer ID")
+            state = item.get("state", "active")
+            if state not in {"active", "disabled", "deleted"}:
+                raise InvalidRequestError("Offer state must be 'active', 'disabled' or 'deleted'")
+            if state == "deleted" and not item.get("deleted", False):
+                raise InvalidRequestError("Deleted state requires deleted=true")
+        try:
+            flow = await self.repository.update_flow_offers(flow_id, offers)
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        if flow is None:
+            from app.core.exceptions import FlowNotFoundError
+            raise FlowNotFoundError()
+        return {
+            "success": True,
+            "flow_id": str(flow.id),
+            "offers": [
+                {
+                    "offer_id": link.offer.keitaro_id,
+                    "share": link.share,
+                    "state": link.state.value,
+                    "deleted": link.deleted,
+                    "synced": link.synced,
+                }
+                for link in flow.offers
+            ],
+        }
+
     async def sync_from_keitaro(self) -> dict[str, Any]:
         """Pull offer bindings for tracked campaigns from Keitaro API.
 
