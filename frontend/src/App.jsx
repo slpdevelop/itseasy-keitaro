@@ -19,7 +19,6 @@ export default function App() {
   const [modal,setModal] = useState(false);
   const [toast,setToast] = useState(null);
   const [draft,setDraft] = useState({name:'',geo:'',offerIds:[]});
-  const [flowEdits,setFlowEdits] = useState({});
   const [expanded,setExpanded] = useState({});
   const [offerSearch,setOfferSearch] = useState('');
 
@@ -39,12 +38,12 @@ export default function App() {
   useEffect(()=>{ loadCompanies(); loadOffers(); },[loadCompanies,loadOffers]);
 
   const openCompany = async (company) => {
-    const id=getId(company); setSelected(company); setDetail(null); setFlowEdits({}); setDetailLoading(true);
+    const id=getId(company); setSelected(company); setDetail(null); setDetailLoading(true);
     try { setDetail(await api.campaign(id)); }
     catch(e) { notify(`Не удалось загрузить компанию: ${e.message}`,'error'); }
     finally { setDetailLoading(false); }
   };
-  const back = () => { setSelected(null); setDetail(null); setFlowEdits({}); loadCompanies(); };
+  const back = () => { setSelected(null); setDetail(null); loadCompanies(); };
   const flows = useMemo(()=>getFlows(detail),[detail]);
   const isGeoFlow = (flow) => flow?.type === 'GEO' || flow?.type === 'geo';
   const filtered = companies.filter(c => `${getName(c)} ${getGeo(c)} ${getId(c)}`.toLowerCase().includes(query.toLowerCase()));
@@ -67,24 +66,51 @@ export default function App() {
     finally { setBusy(''); }
   };
   const toggleDraftOffer = (id) => setDraft(d=>({...d,offerIds:d.offerIds.includes(id)?d.offerIds.filter(x=>x!==id):[...d.offerIds,id]}));
-  const getCurrentOffers = (flow) => flowEdits[flow.id] ?? getFlowOffers(flow);
-  const changeFlowOffer = (flow,id,add) => {
-    const current=getCurrentOffers(flow);
-    const next=add
-      ? [...current,{offer_id:Number(id),share:100,state:'active'}]
-      : current.filter(o=>String(getOfferId(o))!==String(id));
-    setFlowEdits(prev=>({...prev,[flow.id]:next}));
+  const getCurrentOffers = (flow) => getFlowOffers(flow);
+  const isDeletedOffer = (offer) => offer?.deleted === true || offer?.is_deleted === true || String(offer?.state ?? '').toLowerCase() === 'deleted';
+  const recalculateShares = (items) => {
+    const activeCount = items.filter(item => !isDeletedOffer(item)).length;
+    if (!activeCount) return items.map(item => ({...item, share: 0}));
+    const base = Math.floor((100 / activeCount) * 100) / 100;
+    let remainder = Math.round((100 - base * activeCount) * 100) / 100;
+    let firstActive = true;
+    return items.map(item => {
+      if (isDeletedOffer(item)) return {...item, share: 0};
+      const share = firstActive ? Math.round((base + remainder) * 100) / 100 : base;
+      firstActive = false;
+      remainder = 0;
+      return {...item, share};
+    });
   };
-  const saveFlow = async (flow) => {
-    const next=flowEdits[flow.id]; if (!next) return;
-    setBusy(`flow-${flow.id}`);
+  const changeFlowOffer = async (flow,id,action) => {
+    const flowId = flow.id ?? flow.stream_id;
+    if (busy === `flow-${flowId}`) return;
+    const current = getCurrentOffers(flow);
+    let next;
+    if (action === 'add') {
+      // Existing bindings (including soft-deleted ones) cannot be added twice.
+      if (current.some(item => String(getOfferId(item)) === String(id))) return;
+      next = [...current,{offer_id:Number(id),share:0,state:'active',deleted:false}];
+    } else {
+      next = current.map(item => String(getOfferId(item)) === String(id)
+        ? {...item,state:action === 'restore' ? 'active' : 'deleted',deleted:action !== 'restore'}
+        : item);
+    }
+    next = recalculateShares(next);
+    setBusy(`flow-${flowId}`);
     try {
-      await api.updateFlow({...flow,offers:next});
-      setDetail(prev=>({...prev,flows:getFlows(prev).map(f=>f.id===flow.id?{...f,offers:next}:f)}));
-      setFlowEdits(prev=>{const n={...prev};delete n[flow.id];return n;});
-      notify(`Изменения потока «${flow.name || flow.id}» сохранены`);
-    } catch(e) { notify(`Не удалось сохранить поток: ${e.message}`,'error'); }
-    finally { setBusy(''); }
+      await api.updateFlow({...flow,id:flowId,offers:next});
+      setDetail(prev => {
+        if (!prev) return prev;
+        const updated = getFlows(prev).map(item => (item.id ?? item.stream_id) === flowId ? {...item,offers:next} : item);
+        return {...prev,flows:updated,streams:prev.streams ? updated : prev.streams};
+      });
+      notify(action === 'add' ? 'Оффер добавлен' : action === 'restore' ? 'Оффер восстановлен' : 'Оффер помечен удалённым');
+    } catch(e) {
+      notify(`Не удалось обновить офферы потока: ${e.message}`,'error');
+    } finally {
+      setBusy('');
+    }
   };
   const sync = async (direction) => {
     setBusy(direction);
@@ -120,16 +146,16 @@ export default function App() {
         <div className="company-summary"><div className="summary-icon"><Building2 size={22}/></div><div className="summary-main"><small>COMPANY</small><b>{getName(detail || selected)}</b><span className="muted">ID: {fmt(getId(detail || selected))}</span></div><div className="summary-divider"></div><div className="summary-meta"><small>GEO CODE</small><b><Globe2 size={14}/>{getGeo(detail || selected)}</b></div><div className="summary-divider"></div><div className="summary-meta"><small>FLOWS</small><b><Layers3 size={14}/>{detailLoading?'…':flows.length}</b></div></div>
         <div className="section-head flows-head"><div><h2>Company flows</h2><p>Потоки компании и назначенные на них офферы</p></div><span className="count-chip">{flows.length} flows</span></div>
         {detailLoading?<div className="empty"><LoaderCircle className="spin" size={22}/>Загружаем потоки...</div>:flows.length===0?<div className="empty panel-empty"><Layers3 size={25}/><b>Потоки не найдены</b><span>Для этой компании пока нет потоков.</span></div>:<div className="flows-list">{flows.map((flow,index)=>{
-          const current=getCurrentOffers(flow), changed=!!flowEdits[flow.id], flowId=flow.id ?? flow.stream_id ?? index;
+          const current=getCurrentOffers(flow), flowId=flow.id ?? flow.stream_id ?? index;
           const boundIds=current.map(getOfferId).filter(x=>x!=null).map(String);
           const available=offers.filter(o=>!boundIds.includes(String(getId(o)))&&!boundIds.includes(String(o.keitaro_id)));
           const hideBody = isGeoFlow(flow);
           return <article className="flow-card" key={flowId}>
-            <div className="flow-top" onClick={()=>setExpanded(p=>({...p,[flowId]:!p[flowId]}))}><div className="flow-type-icon"><Layers3 size={18}/></div><div className="flow-title"><div><b>{flow.name || `Flow ${flowId}`}</b><span className="flow-id">ID #{flowId}</span></div><small>{flow.type || flow.schema || 'Regular flow'} · {flow.state || 'Active'}</small></div><div className="flow-offer-count">{current.length} {current.length===1?'offer':'offers'}</div>{changed&&<span className="pending-tag">Unsaved</span>}<button className="expand-btn" aria-label="Toggle flow"><ChevronDown className={expanded[flowId]===false?'collapsed':''} size={18}/></button></div>
+            <div className="flow-top" onClick={()=>setExpanded(p=>({...p,[flowId]:!p[flowId]}))}><div className="flow-type-icon"><Layers3 size={18}/></div><div className="flow-title"><div><b>{flow.name || `Flow ${flowId}`}</b><span className="flow-id">ID #{flowId}</span></div><small>{flow.type || flow.schema || 'Regular flow'} · {flow.state || 'Active'}</small></div><div className="flow-offer-count">{current.length} {current.length===1?'offer':'offers'}</div><button className="expand-btn" aria-label="Toggle flow"><ChevronDown className={expanded[flowId]===false?'collapsed':''} size={18}/></button></div>
             {expanded[flowId]!==false&&hideBody==false&&<div className="flow-body">
-              {current.length===0?<div className="no-offers"><div className="no-offer-icon"><Database size={16}/></div><div><b>Офферы не назначены</b><span>Этот поток пока не содержит офферов.</span></div></div>:<div className="offer-list">{current.map((o,i)=>{const id=getOfferId(o);const remote=remoteOffer(id);return <div className="offer-row" key={`${id}-${i}`}><div className="offer-symbol">O</div><div className="offer-info"><b>{getOfferName({...remote,...o})}</b><small>Keitaro ID: {fmt(id)}</small></div><span className="share">{o.share ?? 100}% share</span><span className={`sync-tag ${o.synced===false?'unsynced':''}`}>{o.synced===false?'Pending sync':'Linked'}</span><button className="remove-btn" title="Удалить оффер из потока" onClick={()=>changeFlowOffer(flow,id,false)}><Trash2 size={15}/></button></div>})}</div>}
-              <div className="flow-controls"><div className="add-offer"><select value="" onChange={e=>e.target.value&&changeFlowOffer(flow,e.target.value,true)}><option value="">+ Добавить оффер из Keitaro</option>{available.map(o=><option key={getId(o)} value={getId(o)}>{getOfferName(o)} · #{getId(o)}</option>)}</select><ChevronDown size={14}/></div><button className="save-btn" disabled={!changed||busy===`flow-${flow.id}`} onClick={()=>saveFlow(flow)}>{busy===`flow-${flow.id}`?<LoaderCircle className="spin" size={14}/>:<Check size={14}/>} Сохранить изменения</button></div>
-              <div className="flow-foot"><span>Stream ID: {flowId}</span><span>{changed?'Изменения ожидают сохранения':'Состояние потока актуально'}</span></div>
+              {current.length===0?<div className="no-offers"><div className="no-offer-icon"><Database size={16}/></div><div><b>Офферы не назначены</b><span>Этот поток пока не содержит офферов.</span></div></div>:<div className="offer-list">{current.map((o,i)=>{const id=getOfferId(o);const remote=remoteOffer(id);const deleted=isDeletedOffer(o);return <div className={`offer-row ${deleted?'offer-row-deleted':''}`} key={`${id}-${i}`}><div className="offer-symbol">O</div><div className="offer-info"><b>{getOfferName({...remote,...o})}</b><small>Keitaro ID: {fmt(id)}{deleted?' · Удалён':''}</small></div><span className="share">{o.share ?? 100}% share</span><span className={`sync-tag ${o.synced===false?'unsynced':''}`}>{o.synced===false?'Pending sync':'Linked'}</span>{deleted?<button className="restore-btn" title="Восстановить оффер" disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,'restore')}><RefreshCw size={14}/> Restore</button>:<button className="remove-btn" title="Пометить оффер удалённым" disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,'delete')}><Trash2 size={15}/></button>}</div>})}</div>}
+              <div className="flow-controls"><div className="add-offer"><select value="" disabled={busy===`flow-${flowId}`} onChange={e=>e.target.value&&changeFlowOffer(flow,e.target.value,'add')}><option value="">+ Добавить оффер из Keitaro</option>{available.map(o=><option key={getId(o)} value={getId(o)}>{getOfferName(o)} · #{getId(o)}</option>)}</select><ChevronDown size={14}/></div>{busy===`flow-${flowId}`&&<span className="saving-indicator"><LoaderCircle className="spin" size={14}/> Сохранение…</span>}</div>
+              <div className="flow-foot"><span>Stream ID: {flowId}</span><span>Изменения сохраняются автоматически</span></div>
             </div>}
           </article>
         })}</div>}
