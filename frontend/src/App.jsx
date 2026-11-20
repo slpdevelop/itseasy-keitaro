@@ -102,7 +102,7 @@ export default function App() {
       <div className="brand"><div className="brand-mark"><Layers3 size={20}/></div><div><b>keitaro<span>.</span></b><small>WORKSPACE</small></div></div>
       <div className="side-label">WORKSPACE</div>
       <div className={`nav-item ${!selected?'active':''}`} onClick={back}><Building2 size={17}/> Companies <span className="nav-count">{companies.length}</span></div>
-      <div className="side-bottom"><div className="connection"><span className="pulse"></span><div><b>API connection</b><small>Backend endpoint</small></div><ShieldCheck size={16}/></div><div className="profile"><div className="avatar">AD</div><div><b>Admin</b><small>Workspace</small></div><Settings2 size={17}/></div></div>
+      <div className="side-bottom"><div className="connection"><span className="pulse"></span><div><b>API connection</b><small>Backend endpoint</small></div><ShieldCheck size={16}/></div></div>
     </aside>
     <main className="main">
       <header className="topbar"><div className="crumb"><span>Workspace</span><ChevronRight size={14}/><b>{selected?getName(selected):'Companies'}</b></div><div className="top-actions"><span className="live-dot"></span><span>Keitaro integration</span><button className="icon-btn" title="Refresh" onClick={()=>selected?openCompany(selected):(loadCompanies(),loadOffers())}><RefreshCw size={16}/></button></div></header>
