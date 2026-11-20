@@ -223,6 +223,7 @@ class FlowOffer(BaseModel):
         ForeignKey("offers.id", ondelete="RESTRICT"), index=True
     )
     share: Mapped[int] = mapped_column(Integer)
+    pinned: Mapped[bool] = mapped_column(default=False, server_default="false")
     state: Mapped[FlowOfferState] = mapped_column(
         Enum(FlowOfferState, name="flow_offer_state", values_callable=_enum_values),
         default=FlowOfferState.ACTIVE,

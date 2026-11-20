@@ -63,7 +63,8 @@ class FlowOfferUpdate(BaseModel):
     """Offer binding sent by the UI when editing an OFFER flow."""
 
     offer_id: int = Field(gt=0)
-    share: float = Field(default=0, ge=0, le=100)
+    share: int = Field(default=0, ge=0, le=100)
+    pinned: bool = False
     state: str = "active"
     deleted: bool = False
 

@@ -68,8 +68,15 @@ class FlowService:
         """
         if not offer_ids:
             raise InvalidRequestError("At least one offer is required to create an offer stream")
-        share = int(100 / len(offer_ids))
-        offers = [FlowOffer(offer_id=offer_id, share=share) for offer_id in offer_ids]
+        base, remainder = divmod(100, len(offer_ids))
+        remainder_start = len(offer_ids) - remainder
+        offers = [
+            FlowOffer(
+                offer_id=offer_id,
+                share=base + (1 if index >= remainder_start else 0),
+            )
+            for index, offer_id in enumerate(offer_ids)
+        ]
         offer_flow_data = FlowCreate(
             campaign_id=campaign_id,
             name="Offers",
@@ -105,6 +112,7 @@ class FlowService:
                 {
                     "offer_id": link.offer.keitaro_id,
                     "share": link.share,
+                    "pinned": link.pinned,
                     "state": link.state.value,
                     "deleted": link.deleted,
                     "synced": link.synced,

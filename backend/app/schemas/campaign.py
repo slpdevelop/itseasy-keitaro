@@ -106,6 +106,7 @@ class CampaignFlowOfferDetailResponse(Base):
     keitaro_id: int = Field(validation_alias=AliasPath("offer", "keitaro_id"))
     name: str = Field(validation_alias=AliasPath("offer", "name"))
     share: int
+    pinned: bool = False
     state: str
     deleted: bool = False
     synced: bool = False

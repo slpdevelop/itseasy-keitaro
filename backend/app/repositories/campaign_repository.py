@@ -270,6 +270,7 @@ class CampaignRepository:
                 link.state = FlowOfferState(state)
                 link.deleted = is_deleted
                 link.share = 0 if link.deleted else int(item.get("share", 0))
+                link.pinned = False if link.deleted else bool(item.get("pinned", False))
                 link.synced = False
 
             # Bindings omitted from the submitted full list are retained as deleted.
@@ -280,11 +281,20 @@ class CampaignRepository:
                     link.synced = False
 
             active_links = [link for link in links_by_offer_id.values() if not link.deleted]
-            count = len(active_links)
-            if count:
-                base, remainder = divmod(100, count)
-                for index, link in enumerate(active_links):
-                    link.share = base + (1 if index < remainder else 0)
+            pinned_links = [link for link in active_links if link.pinned]
+            unpinned_links = [link for link in active_links if not link.pinned]
+            pinned_total = sum(link.share for link in pinned_links)
+            if pinned_total > 100:
+                raise ValueError("The total share of pinned offers cannot exceed 100%")
+            remaining = 100 - pinned_total
+            if not unpinned_links and active_links and remaining != 0:
+                raise ValueError("All offers are pinned; their shares must total exactly 100%")
+            if unpinned_links:
+                base, remainder = divmod(remaining, len(unpinned_links))
+                # Put remainder points on the last offers: 3 offers => 33, 33, 34.
+                remainder_start = len(unpinned_links) - remainder
+                for index, link in enumerate(unpinned_links):
+                    link.share = base + (1 if index >= remainder_start else 0)
 
             flow.synced = False
             await session.flush()
