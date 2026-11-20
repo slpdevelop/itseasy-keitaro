@@ -46,6 +46,7 @@ export default function App() {
   };
   const back = () => { setSelected(null); setDetail(null); setFlowEdits({}); loadCompanies(); };
   const flows = useMemo(()=>getFlows(detail),[detail]);
+  const isGeoFlow = (flow) => flow?.type === 'GEO' || flow?.type === 'geo';
   const filtered = companies.filter(c => `${getName(c)} ${getGeo(c)} ${getId(c)}`.toLowerCase().includes(query.toLowerCase()));
   const remoteOffer = (id) => offers.find(o => String(getId(o))===String(id) || String(o.keitaro_id)===String(id));
   const isOfferInLocal = (id) => localOffers.some(o=>String(getOfferId(o))===String(id) || String(o.keitaro_id)===String(id));
@@ -122,9 +123,10 @@ export default function App() {
           const current=getCurrentOffers(flow), changed=!!flowEdits[flow.id], flowId=flow.id ?? flow.stream_id ?? index;
           const boundIds=current.map(getOfferId).filter(x=>x!=null).map(String);
           const available=offers.filter(o=>!boundIds.includes(String(getId(o)))&&!boundIds.includes(String(o.keitaro_id)));
+          const hideBody = isGeoFlow(flow);
           return <article className="flow-card" key={flowId}>
             <div className="flow-top" onClick={()=>setExpanded(p=>({...p,[flowId]:!p[flowId]}))}><div className="flow-type-icon"><Layers3 size={18}/></div><div className="flow-title"><div><b>{flow.name || `Flow ${flowId}`}</b><span className="flow-id">ID #{flowId}</span></div><small>{flow.type || flow.schema || 'Regular flow'} · {flow.state || 'Active'}</small></div><div className="flow-offer-count">{current.length} {current.length===1?'offer':'offers'}</div>{changed&&<span className="pending-tag">Unsaved</span>}<button className="expand-btn" aria-label="Toggle flow"><ChevronDown className={expanded[flowId]===false?'collapsed':''} size={18}/></button></div>
-            {expanded[flowId]!==false&&<div className="flow-body">
+            {expanded[flowId]!==false&&hideBody==false&&<div className="flow-body">
               {current.length===0?<div className="no-offers"><div className="no-offer-icon"><Database size={16}/></div><div><b>Офферы не назначены</b><span>Этот поток пока не содержит офферов.</span></div></div>:<div className="offer-list">{current.map((o,i)=>{const id=getOfferId(o);const remote=remoteOffer(id);return <div className="offer-row" key={`${id}-${i}`}><div className="offer-symbol">O</div><div className="offer-info"><b>{getOfferName({...remote,...o})}</b><small>Keitaro ID: {fmt(id)}</small></div><span className="share">{o.share ?? 100}% share</span><span className={`sync-tag ${o.synced===false?'unsynced':''}`}>{o.synced===false?'Pending sync':'Linked'}</span><button className="remove-btn" title="Удалить оффер из потока" onClick={()=>changeFlowOffer(flow,id,false)}><Trash2 size={15}/></button></div>})}</div>}
               <div className="flow-controls"><div className="add-offer"><select value="" onChange={e=>e.target.value&&changeFlowOffer(flow,e.target.value,true)}><option value="">+ Добавить оффер из Keitaro</option>{available.map(o=><option key={getId(o)} value={getId(o)}>{getOfferName(o)} · #{getId(o)}</option>)}</select><ChevronDown size={14}/></div><button className="save-btn" disabled={!changed||busy===`flow-${flow.id}`} onClick={()=>saveFlow(flow)}>{busy===`flow-${flow.id}`?<LoaderCircle className="spin" size={14}/>:<Check size={14}/>} Сохранить изменения</button></div>
               <div className="flow-foot"><span>Stream ID: {flowId}</span><span>{changed?'Изменения ожидают сохранения':'Состояние потока актуально'}</span></div>
