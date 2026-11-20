@@ -1,34 +1,40 @@
-# Frontend image for Keitaro Campaign Manager.
-# Build: docker compose -f backend/docker-compose.yml build frontend
-# Run:   docker compose -f backend/docker-compose.yml up frontend
+# syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------
-# Stage 1: build the Vite + React application
+# Этап 1: зависимости (общий базовый слой)
 # ---------------------------------------------------------------
-FROM node:20-alpine AS builder
+FROM node:20-alpine AS deps
 
 ENV VITE_API_BASE_URL=/api/v1
-
 WORKDIR /app
 
-# Install dependencies first (layer caching on dependency changes only).
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Copy sources and build.
+# ---------------------------------------------------------------
+# Этап 2: production — статичная сборка Vite + отдача через nginx
+# ---------------------------------------------------------------
+FROM deps AS builder
 COPY . .
 ARG VITE_API_BASE_URL=/api/v1
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN npm run build
 
-# ---------------------------------------------------------------
-# Stage 2: serve static files with nginx and proxy /api to backend
-# ---------------------------------------------------------------
-FROM nginx:alpine
-
+FROM nginx:alpine AS production
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]
+
+# ---------------------------------------------------------------
+# Этап 3: development — Vite dev server с hot reload
+# ---------------------------------------------------------------
+FROM deps AS development
+WORKDIR /app
+COPY . .
+# Относительный путь — Vite проксирует /api на backend через server.proxy.
+ENV VITE_API_BASE_URL=/api/v1
+ENV CHOKIDAR_USEPOLLING=true
+EXPOSE 80
+CMD ["npm", "run", "dev", "--", "--host", "--port", "80"]
