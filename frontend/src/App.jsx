@@ -102,8 +102,8 @@ export default function App() {
     } else {
       next = current.map(item => {
         if (String(getOfferId(item)) !== String(id)) return item;
-        if (action === 'restore') return {...item,state:'active',deleted:false};
-        if (action === 'delete') return {...item,state:'deleted',deleted:true,pinned:false};
+        if (action === 'restore') return {...item,state:item.state === 'deleted' ? 'active' : item.state,deleted:false};
+        if (action === 'delete') return {...item,deleted:true,pinned:false};
         if (action === 'pin') return {...item,pinned:true};
         if (action === 'unpin') return {...item,pinned:false};
         if (action === 'share') return {...item,share:Number(value),pinned:true};
@@ -114,7 +114,13 @@ export default function App() {
     catch(e) { notify(e.message,'error'); return; }
     setBusy(`flow-${flowId}`);
     try {
-      await api.updateFlow({...flow,id:flowId,offers:next});
+      const saved = await api.updateFlow({...flow,id:flowId,offers:next});
+      // The backend decides what is pending sync, so take its flags instead of keeping stale local copies.
+      const savedById = new Map((Array.isArray(saved?.offers) ? saved.offers : []).map(o => [String(o.offer_id), o]));
+      next = next.map(item => {
+        const s = savedById.get(String(getOfferId(item)));
+        return s ? {...item,share:s.share,pinned:s.pinned,state:s.state,deleted:s.deleted,synced:s.synced} : {...item,synced:false};
+      });
       setDetail(prev => {
         if (!prev) return prev;
         const updated = getFlows(prev).map(item => (item.id ?? item.stream_id) === flowId ? {...item,offers:next} : item);
@@ -131,7 +137,13 @@ export default function App() {
     setBusy(direction);
     try {
       const result=direction==='fetch'?await api.syncFromKeitaro():await api.syncToKeitaro();
-      notify(result?.message || (direction==='fetch'?'Данные получены из Keitaro':'Изменения отправлены в Keitaro'));
+      const errorCount=(result?.errors||[]).length;
+      const conflictCount=(result?.conflicts||[]).reduce((n,c)=>n+(c.offer_ids?.length||0),0);
+      const pendingCount=(result?.flows_still_pending||[]).length;
+      if (errorCount) notify(`Синхронизация завершилась с ошибками (${errorCount}). Часть данных не обновлена.`,'error');
+      else if (conflictCount) notify(`Получено из Keitaro. Офферов с несохранёнными правками пропущено: ${conflictCount}. Сначала нажмите Sync to Keitaro.`,'error');
+      else if (pendingCount) notify(`Часть правок появилась во время отправки и ждёт следующей синхронизации (потоков: ${pendingCount}).`,'error');
+      else notify(result?.message || (direction==='fetch'?'Данные получены из Keitaro':'Изменения отправлены в Keitaro'));
       if(selected) await openCompany(selected);
       await loadOffers();
     } catch(e) { notify(`Ошибка синхронизации: ${e.message}`,'error'); }
@@ -180,4 +192,4 @@ export default function App() {
     {modal&&<Modal onClose={()=>setModal(false)}><div className="modal-head"><div><div className="eyebrow">NEW WORKSPACE</div><h2>Создать компанию</h2><p>Укажите название, GEO и офферы для новой компании.</p></div><button className="icon-btn" onClick={()=>setModal(false)}><X size={18}/></button></div><form onSubmit={create}><label>Название компании<input required autoFocus placeholder="Например, test_company_eu" value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))}/></label><label>GEO код<input required maxLength="3" placeholder="DE" value={draft.geo} onChange={e=>setDraft(d=>({...d,geo:e.target.value.toUpperCase()}))}/><small>Двухбуквенный код страны, например DE, US, FR</small></label><label>Офферы <span className="optional">необязательно</span></label><div className="offer-picker"><div className="picker-search"><Search size={15}/><input placeholder="Найти оффер..." value={offerSearch} onChange={e=>setOfferSearch(e.target.value)}/></div><div className="picker-options">{offers.filter(o=>`${getOfferName(o)} ${getId(o)}`.toLowerCase().includes(offerSearch.toLowerCase())).map(o=><label className="picker-option" key={getId(o)}><input type="checkbox" checked={draft.offerIds.includes(getId(o))} onChange={()=>toggleDraftOffer(getId(o))}/><span><b>{getOfferName(o)}</b><small>ID: {getId(o)}</small></span></label>)}{offers.length===0&&<div className="picker-empty">Офферы не загружены</div>}</div></div>{draft.offerIds.length>0&&<div className="selected-count">{draft.offerIds.length} оффер(ов) выбрано</div>}<div className="modal-actions"><button type="button" className="secondary-btn" onClick={()=>setModal(false)}>Отмена</button><button className="primary-btn" disabled={busy==='create'}>{busy==='create'?<LoaderCircle className="spin" size={16}/>:<Plus size={16}/>} Создать компанию</button></div></form></Modal>}
     <Toast toast={toast} onClose={()=>setToast(null)}/>
   </div>;
-}
+}
