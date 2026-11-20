@@ -215,7 +215,6 @@ class CampaignRepository:
             await session.flush()
             return True
 
-
     async def update_flow_offers(self, flow_id, items: list[dict[str, Any]]) -> Flow | None:
         """Persist flow offer bindings, including soft-delete and restore state.
 
@@ -240,9 +239,11 @@ class CampaignRepository:
 
             offers = []
             if offer_ids:
-                offers = list((await session.execute(
-                    select(Offer).where(Offer.keitaro_id.in_(offer_ids))
-                )).scalars().all())
+                offers = list(
+                    (await session.execute(select(Offer).where(Offer.keitaro_id.in_(offer_ids))))
+                    .scalars()
+                    .all()
+                )
             by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
             for missing_id in sorted(set(offer_ids) - by_keitaro_id.keys()):
                 offer = Offer(keitaro_id=missing_id, name=f"Offer {missing_id}", synced=True)
@@ -258,9 +259,15 @@ class CampaignRepository:
                 incoming_local_ids.add(offer.id)
                 link = links_by_offer_id.get(offer.id)
                 if link is None:
-                    link = FlowOffer(offer_id=offer.id, share=0)
+                    # Assign the ORM relationship, not only offer_id. The service
+                    # serializes link.offer after this repository session is closed.
+                    link = FlowOffer(offer=offer, share=0)
                     flow.offers.append(link)
                     links_by_offer_id[offer.id] = link
+                else:
+                    # Keep the relationship explicitly populated for both existing
+                    # and newly-created bindings before returning the detached Flow.
+                    link.offer = offer
                 state = item.get("state") or FlowOfferState.ACTIVE.value
                 is_deleted = bool(item.get("deleted", False)) or state == "deleted"
                 if state == "deleted":
@@ -454,12 +461,13 @@ class CampaignRepository:
         if missing:
             await session.flush()  # Need offer.id for foreign keys
 
-        existing = (
-            (await session.execute(select(FlowOffer).where(FlowOffer.flow_id == flow.id)))
-            .scalars()
-            .all()
+        existing_result = await session.execute(
+            select(FlowOffer)
+            .options(selectinload(FlowOffer.offer))
+            .where(FlowOffer.flow_id == flow.id)
         )
-        by_offer_id = {link.offer_id: link for link in existing}
+        existing_links = existing_result.scalars().all()
+        by_offer_id = {link.offer_id: link for link in existing_links}
 
         for item in items:
             offer = offers_by_keitaro_id[int(item["offer_id"])]
