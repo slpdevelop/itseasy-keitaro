@@ -1,4 +1,4 @@
-import { Activity, ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Building2, Check, ChevronDown, ChevronRight, CircleAlert, Database, Globe2, Layers3, LoaderCircle, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, X } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Building2, Check, ChevronDown, ChevronRight, CircleAlert, Database, Globe2, Layers3, LoaderCircle, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, X, Pin, PinOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, getFlowOffers, getFlows, getGeo, getId, getName, getOfferId, getOfferName, normalizeList } from './api';
 
@@ -69,20 +69,28 @@ export default function App() {
   const getCurrentOffers = (flow) => getFlowOffers(flow);
   const isDeletedOffer = (offer) => offer?.deleted === true || offer?.is_deleted === true || String(offer?.state ?? '').toLowerCase() === 'deleted';
   const recalculateShares = (items) => {
-    const activeCount = items.filter(item => !isDeletedOffer(item)).length;
-    if (!activeCount) return items.map(item => ({...item, share: 0}));
-    const base = Math.floor((100 / activeCount) * 100) / 100;
-    let remainder = Math.round((100 - base * activeCount) * 100) / 100;
-    let firstActive = true;
+    const active = items.filter(item => !isDeletedOffer(item));
+    const pinned = active.filter(item => item.pinned);
+    const unpinned = active.filter(item => !item.pinned);
+    const pinnedTotal = pinned.reduce((sum, item) => sum + Number(item.share || 0), 0);
+    if (pinnedTotal > 100) throw new Error('Сумма закреплённых Share не может превышать 100%');
+    const remaining = 100 - pinnedTotal;
+    if (!unpinned.length && active.length && remaining !== 0) {
+      throw new Error('Все офферы закреплены: их Share должны в сумме составлять 100%');
+    }
+    const base = unpinned.length ? Math.floor(remaining / unpinned.length) : 0;
+    const remainder = unpinned.length ? remaining % unpinned.length : 0;
+    const remainderStart = unpinned.length - remainder;
+    let unpinnedIndex = 0;
     return items.map(item => {
-      if (isDeletedOffer(item)) return {...item, share: 0};
-      const share = firstActive ? Math.round((base + remainder) * 100) / 100 : base;
-      firstActive = false;
-      remainder = 0;
+      if (isDeletedOffer(item)) return {...item, share: 0, pinned: false};
+      if (item.pinned) return {...item, share: Number(item.share || 0)};
+      const share = base + (unpinnedIndex >= remainderStart ? 1 : 0);
+      unpinnedIndex += 1;
       return {...item, share};
     });
   };
-  const changeFlowOffer = async (flow,id,action) => {
+  const changeFlowOffer = async (flow,id,action,value) => {
     const flowId = flow.id ?? flow.stream_id;
     if (busy === `flow-${flowId}`) return;
     const current = getCurrentOffers(flow);
@@ -92,11 +100,18 @@ export default function App() {
       if (current.some(item => String(getOfferId(item)) === String(id))) return;
       next = [...current,{offer_id:Number(id),share:0,state:'active',deleted:false}];
     } else {
-      next = current.map(item => String(getOfferId(item)) === String(id)
-        ? {...item,state:action === 'restore' ? 'active' : 'deleted',deleted:action !== 'restore'}
-        : item);
+      next = current.map(item => {
+        if (String(getOfferId(item)) !== String(id)) return item;
+        if (action === 'restore') return {...item,state:'active',deleted:false};
+        if (action === 'delete') return {...item,state:'deleted',deleted:true,pinned:false};
+        if (action === 'pin') return {...item,pinned:true};
+        if (action === 'unpin') return {...item,pinned:false};
+        if (action === 'share') return {...item,share:Number(value),pinned:true};
+        return item;
+      });
     }
-    next = recalculateShares(next);
+    try { next = recalculateShares(next); }
+    catch(e) { notify(e.message,'error'); return; }
     setBusy(`flow-${flowId}`);
     try {
       await api.updateFlow({...flow,id:flowId,offers:next});
@@ -105,7 +120,7 @@ export default function App() {
         const updated = getFlows(prev).map(item => (item.id ?? item.stream_id) === flowId ? {...item,offers:next} : item);
         return {...prev,flows:updated,streams:prev.streams ? updated : prev.streams};
       });
-      notify(action === 'add' ? 'Оффер добавлен' : action === 'restore' ? 'Оффер восстановлен' : 'Оффер помечен удалённым');
+      notify(action === 'add' ? 'Оффер добавлен' : action === 'restore' ? 'Оффер восстановлен' : action === 'delete' ? 'Оффер помечен удалённым' : action === 'pin' ? 'Share закреплён' : action === 'unpin' ? 'Share откреплён' : 'Share обновлён');
     } catch(e) {
       notify(`Не удалось обновить офферы потока: ${e.message}`,'error');
     } finally {
@@ -153,7 +168,7 @@ export default function App() {
           return <article className="flow-card" key={flowId}>
             <div className="flow-top" onClick={()=>setExpanded(p=>({...p,[flowId]:!p[flowId]}))}><div className="flow-type-icon"><Layers3 size={18}/></div><div className="flow-title"><div><b>{flow.name || `Flow ${flowId}`}</b><span className="flow-id">ID #{flowId}</span></div><small>{flow.type || flow.schema || 'Regular flow'} · {flow.state || 'Active'}</small></div><div className="flow-offer-count">{current.length} {current.length===1?'offer':'offers'}</div><button className="expand-btn" aria-label="Toggle flow"><ChevronDown className={expanded[flowId]===false?'collapsed':''} size={18}/></button></div>
             {expanded[flowId]!==false&&hideBody==false&&<div className="flow-body">
-              {current.length===0?<div className="no-offers"><div className="no-offer-icon"><Database size={16}/></div><div><b>Офферы не назначены</b><span>Этот поток пока не содержит офферов.</span></div></div>:<div className="offer-list">{current.map((o,i)=>{const id=getOfferId(o);const remote=remoteOffer(id);const deleted=isDeletedOffer(o);return <div className={`offer-row ${deleted?'offer-row-deleted':''}`} key={`${id}-${i}`}><div className="offer-symbol">O</div><div className="offer-info"><b>{getOfferName({...remote,...o})}</b><small>Keitaro ID: {fmt(id)}{deleted?' · Удалён':''}</small></div><span className="share">{o.share ?? 100}% share</span><span className={`sync-tag ${o.synced===false?'unsynced':''}`}>{o.synced===false?'Pending sync':'Linked'}</span>{deleted?<button className="restore-btn" title="Восстановить оффер" disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,'restore')}><RefreshCw size={14}/> Restore</button>:<button className="remove-btn" title="Пометить оффер удалённым" disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,'delete')}><Trash2 size={15}/></button>}</div>})}</div>}
+              {current.length===0?<div className="no-offers"><div className="no-offer-icon"><Database size={16}/></div><div><b>Офферы не назначены</b><span>Этот поток пока не содержит офферов.</span></div></div>:<div className="offer-list">{current.map((o,i)=>{const id=getOfferId(o);const remote=remoteOffer(id);const deleted=isDeletedOffer(o);return <div className={`offer-row ${deleted?'offer-row-deleted':''}`} key={`${id}-${i}`}><div className="offer-symbol">O</div><div className="offer-info"><b>{getOfferName({...remote,...o})}</b><small>Keitaro ID: {fmt(id)}{deleted?' · Удалён':''}</small></div><div className="share-editor"><input aria-label="Share percentage" type="number" min="0" max="100" step="1" defaultValue={o.share ?? 0} disabled={deleted || busy===`flow-${flowId}`} onBlur={e=>{const value=Number(e.target.value);if(Number.isInteger(value)&&value>=0&&value<=100&&value!==Number(o.share))changeFlowOffer(flow,id,'share',value);else e.target.value=String(o.share ?? 0);}}/><span>%</span></div>{!deleted&&<button className={`pin-btn ${o.pinned?'pinned':''}`} title={o.pinned?'Открепить Share':'Закрепить Share'} disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,o.pinned?'unpin':'pin')}>{o.pinned?<Pin size={14}/>:<PinOff size={14}/>}</button>}<span className={`sync-tag ${o.synced===false?'unsynced':''}`}>{o.synced===false?'Pending sync':'Linked'}</span>{deleted?<button className="restore-btn" title="Восстановить оффер" disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,'restore')}><RefreshCw size={14}/> Restore</button>:<button className="remove-btn" title="Пометить оффер удалённым" disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,'delete')}><Trash2 size={15}/></button>}</div>})}</div>}
               <div className="flow-controls"><div className="add-offer"><select value="" disabled={busy===`flow-${flowId}`} onChange={e=>e.target.value&&changeFlowOffer(flow,e.target.value,'add')}><option value="">+ Добавить оффер из Keitaro</option>{available.map(o=><option key={getId(o)} value={getId(o)}>{getOfferName(o)} · #{getId(o)}</option>)}</select><ChevronDown size={14}/></div>{busy===`flow-${flowId}`&&<span className="saving-indicator"><LoaderCircle className="spin" size={14}/> Сохранение…</span>}</div>
               <div className="flow-foot"><span>Stream ID: {flowId}</span><span>Изменения сохраняются автоматически</span></div>
             </div>}
