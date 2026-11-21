@@ -74,7 +74,7 @@ class KeitaroFlowGateway:
             Updated flow data or raw response from Keitaro.
         """
         return await self.gateway.put(f"/streams/{flow_id}", {"offers": offers})
+
     async def get_offer_details(self, offer_id: int) -> Any:
         """Retrieve an offer from Keitaro to resolve its display name during sync."""
         return await self.gateway.get(f"/offers/{offer_id}")
-

@@ -1,9 +1,10 @@
 """Persistence operations for locally managed Keitaro offers."""
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Offer
 
@@ -23,13 +24,13 @@ class OfferRepository:
         _session_factory: Async session maker using shared engine from app state.
     """
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         """Initialize repository with SQLAlchemy session factory.
 
         Args:
             session_factory: Async session maker configured with engine and settings.
         """
-        self._session_factory = session_factory
+        self.session = session
 
     async def get_all(self, *, include_deleted: bool = False) -> list[Offer]:
         """Retrieve all offers from local database (optionally including deleted).
@@ -50,6 +51,13 @@ class OfferRepository:
                 statement = statement.where(Offer.deleted.is_(False))
             result = await session.execute(statement)
             return list(result.scalars().all())
+
+    async def get_missing_keitaro_ids(self, keitaro_ids: set[int]) -> set[int]:
+        if not keitaro_ids:
+            return set()
+        query = select(Offer.keitaro_id).where(Offer.keitaro_id.in_(keitaro_ids))
+        existing = set(await self._session_factory.scalars(query))
+        return keitaro_ids - existing
 
     async def get_by_id(self, offer_id: UUID) -> Offer | None:
         """Fetch a single offer entity by local UUID.
@@ -98,17 +106,32 @@ class OfferRepository:
         Returns:
             Created Offer entity with database-assigned UUID.
         """
-        async with self._session_factory() as session, session.begin():
-            offer = Offer(
-                keitaro_id=keitaro_id,
-                name=name,
+        offer = Offer(
+            keitaro_id=keitaro_id,
+            name=name,
+            synced=synced,
+            deleted=False,
+        )
+        self.session.add(offer)
+        await self.session.flush()
+        await self.session.refresh(offer)
+        return offer
+
+    async def bulk_create(self, offers: list[dict], *, synced=True, fetched_at=None) -> list[Offer]:
+        new_offers: list[Offer] = [
+            Offer(
+                keitaro_id=o["id"],
+                name=o["name"],
                 synced=synced,
                 deleted=False,
+                fetched_at=fetched_at,
             )
-            session.add(offer)
-            await session.flush()
-            await session.refresh(offer)
-            return offer
+            for o in offers
+        ]
+
+        self.session.add_all(new_offers)
+        await self.session.flush()
+        return new_offers
 
     async def set_deleted(
         self, offer_id: UUID, *, deleted: bool, synced: bool | None = None

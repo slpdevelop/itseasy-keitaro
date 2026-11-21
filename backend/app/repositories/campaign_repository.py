@@ -27,13 +27,28 @@ class CampaignRepository:
         _session_factory: Async session maker using shared engine from app state.
     """
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
+    def __init__(self, session: AsyncSession):
         """Initialize repository with SQLAlchemy session factory.
 
         Args:
             session_factory: Async session maker configured with engine and settings.
         """
-        self._session_factory: async_sessionmaker[AsyncSession] = session_factory
+        self._session: AsyncSession = session
+
+    async def create_or_update_campaign(self, keitaro_campaign: dict) -> Campaign:
+        now: datetime = datetime.now(timezone.utc)
+        campaign = await self._get_by_keitaro_id(self.session, Campaign, keitaro_campaign["id"])
+        if not campaign:
+            campaign = Campaign(keitaro_id=keitaro_campaign["id"])
+            self.session.add(campaign)
+
+        campaign.name = keitaro_campaign["name"]
+        campaign.domain_keitaro_id = keitaro_campaign["domain_id"]
+        campaign.group_keitaro_id = keitaro_campaign["group_id"]
+        campaign.traffic_source_keitaro_id = keitaro_campaign["traffic_source_id"]
+        campaign.fetched_at = now
+        await self.session.flush()
+        return campaign
 
     async def save_created_campaign(
         self,
@@ -67,23 +82,24 @@ class CampaignRepository:
             CampaignCreationError: If Keitaro returns invalid flow IDs during save.
         """
         now: datetime = datetime.now(timezone.utc)
-        async with self._session_factory() as session, session.begin():
-            campaign = await self._get_by_keitaro_id(session, Campaign, keitaro_id)
-            if campaign is None:
-                campaign = Campaign(keitaro_id=keitaro_id)
-                session.add(campaign)
-            campaign.name = name
-            campaign.domain_keitaro_id = domain_keitaro_id
-            campaign.group_keitaro_id = group_keitaro_id
-            campaign.traffic_source_keitaro_id = traffic_source_keitaro_id
-            campaign.fetched_at = now
-            await session.flush()
-            await self._upsert_flow(
-                session, campaign, geo_flow, FlowType.GEO, country_code.upper(), now
-            )
-            flow = await self._upsert_flow(session, campaign, offer_flow, FlowType.OFFER, None, now)
-            await self._upsert_flow_offers(session, flow, offer_flow.get("offers") or [])
-            flow.synced = True
+        campaign = await self._get_by_keitaro_id(self.session, Campaign, keitaro_id)
+        if campaign is None:
+            campaign = Campaign(keitaro_id=keitaro_id)
+            self.session.add(campaign)
+        campaign.name = name
+        campaign.domain_keitaro_id = domain_keitaro_id
+        campaign.group_keitaro_id = group_keitaro_id
+        campaign.traffic_source_keitaro_id = traffic_source_keitaro_id
+        campaign.fetched_at = now
+        await self.session.flush()
+        await self._upsert_flow(
+            self.session, campaign, geo_flow, FlowType.GEO, country_code.upper(), now
+        )
+        flow = await self._upsert_flow(
+            self.session, campaign, offer_flow, FlowType.OFFER, None, now
+        )
+        await self._upsert_flow_offers(self.session, flow, offer_flow.get("offers") or [])
+        flow.synced = True
 
     async def get_campaign_detail(self, keitaro_id: int) -> Campaign | None:
         """Retrieve a campaign with all nested flows and offer bindings.
@@ -324,9 +340,7 @@ class CampaignRepository:
             # What Keitaro-visible fields looked like before this update.
             # Keyed by the local Offer UUID: a binding created in this call has no
             # offer_id yet (it is only populated on flush), but always has link.offer.
-            before = {
-                link.offer.id: (link.share, link.state, link.deleted) for link in flow.offers
-            }
+            before = {link.offer.id: (link.share, link.state, link.deleted) for link in flow.offers}
             incoming_local_ids = set()
             for item in items:
                 offer = by_keitaro_id[int(item["offer_id"])]

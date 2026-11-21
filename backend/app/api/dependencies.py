@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from app.core.config import Settings, get_settings
 from app.integrations.keitaro import KeitaroGateway
 from app.integrations.flow_gateway import KeitaroFlowGateway
-from app.integrations.campaign_gateway import KeitaroCampaignGateway
 from app.repositories.campaign_repository import CampaignRepository
 from app.repositories.offer_repository import OfferRepository
 from app.services.campaign_service import CampaignService
@@ -81,10 +80,7 @@ FlowServiceDep = Annotated[FlowService, Depends(get_flow_service)]
 
 
 def get_campaign_service(
-    gateway: KeitaroDep,
-    flow_service: FlowServiceDep,
-    settings: Annotated[Settings, Depends(get_settings)],
-    campaign_repo: CampaignRepositoryDep,
+    gateway: KeitaroDep, settings: Annotated[Settings, Depends(get_settings)], request: Request
 ) -> CampaignService:
     """Create and inject CampaignService with all required dependencies.
 
@@ -101,11 +97,11 @@ def get_campaign_service(
     Returns:
         Configured CampaignService instance ready for campaign operations.
     """
+
     return CampaignService(
-        gateway=KeitaroCampaignGateway(gateway),
-        flow_service=flow_service,
+        gateway=gateway,
         settings=settings,
-        campaign_repo=campaign_repo,
+        db_session=request.app.state.session_factory,
     )
 
 

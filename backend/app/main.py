@@ -27,6 +27,7 @@ from app.core.exceptions import (
     unhandled_exception_handler,
     validation_exception_handler,
 )
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -49,6 +50,10 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 
     db_engine: AsyncEngine = create_database_engine(settings)
     application.state.db_engine = db_engine
+    application.state.session_factory = async_sessionmaker(
+        db_engine,
+        expire_on_commit=False,
+    )
 
     client = httpx.AsyncClient(
         base_url=f"{settings.keitaro_base_url.rstrip('/')}/admin_api/v1",

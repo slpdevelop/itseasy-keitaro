@@ -85,7 +85,6 @@ class FlowService:
         )
         return await self.gateway.create_flow(offer_flow_data)
 
-
     async def update_flow_offers(self, flow_id, offers: list[dict[str, Any]]) -> dict[str, Any]:
         """Update local offer bindings for a flow and return normalized state."""
         if len({item.get("offer_id") for item in offers}) != len(offers):
@@ -104,6 +103,7 @@ class FlowService:
             raise InvalidRequestError(str(exc)) from exc
         if flow is None:
             from app.core.exceptions import FlowNotFoundError
+
             raise FlowNotFoundError()
         return {
             "success": True,
@@ -238,9 +238,7 @@ class FlowService:
 
         for flow in flows:
             # Snapshot of exactly what is sent, so only these values get confirmed.
-            pushed = {
-                link.id: (link.share, link.state.value, link.deleted) for link in flow.offers
-            }
+            pushed = {link.id: (link.share, link.state.value, link.deleted) for link in flow.offers}
             offers = [
                 {
                     "offer_id": link.offer.keitaro_id,
@@ -321,3 +319,6 @@ class FlowService:
                 raise InvalidRequestError("Keitaro returned an invalid offer state in a stream")
             validated.append({"offer_id": offer_id, "share": share, "state": state})
         return validated
+
+    async def get_campaign_flows(self, campaign_id: int) -> list[dict]:
+        return await self.gateway.get_campaign_flows(campaign_id=campaign_id)

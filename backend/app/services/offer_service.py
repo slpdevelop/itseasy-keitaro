@@ -93,8 +93,6 @@ class OfferService:
 
         returned_id = data.get("id")
         name = data.get("name")
-        if returned_id != keitaro_id or not isinstance(name, str) or not name.strip():
-            raise InvalidRequestError("Keitaro returned invalid offer information")
 
         existing = await self.repository.get_by_keitaro_id(keitaro_id)
         if existing is not None:
@@ -126,7 +124,7 @@ class OfferService:
         Raises:
             OfferNotFoundError: If offer not found in database.
         """
-        offer = await self.repository.set_deleted(offer_id, deleted=True)
+        offer: Offer | None = await self.repository.set_deleted(offer_id, deleted=True)
         if offer is None:
             raise OfferNotFoundError()
         return offer
@@ -147,7 +145,7 @@ class OfferService:
         Raises:
             OfferNotFoundError: If offer not found in database.
         """
-        offer = await self.repository.set_deleted(offer_id, deleted=False)
+        offer: Offer | None = await self.repository.set_deleted(offer_id, deleted=False)
         if offer is None:
             raise OfferNotFoundError()
         return offer

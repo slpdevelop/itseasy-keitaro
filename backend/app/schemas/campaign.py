@@ -8,6 +8,9 @@ from app.schemas.base import Base
 from pydantic import AliasPath, BaseModel, Field, field_validator
 
 
+class Keitaro
+
+
 class KTCampaignCreateRequest(BaseModel):
     """Request body for creating a campaign via Keitaro API.
 
