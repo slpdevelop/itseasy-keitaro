@@ -232,7 +232,6 @@ class CampaignService:
                 remote_campaign, fetched_at=fetched_at
             )
 
-            # Между фазами 2 и 4 параллельный запрос мог уже создать часть офферов.
             absent_ids: set[int] = await offers.get_missing_keitaro_ids(
                 {offer.id for offer in missing_offers}
             )
@@ -348,7 +347,6 @@ class CampaignService:
 
             self._reconcile_offers(flow, remote, offers_by_kid)
 
-            # Флоу остаётся "pending", пока у любой привязки есть непушнутая правка.
             flow.synced = not any(binding.synced is False for binding in flow.offers)
 
         for keitaro_id, flow in local_by_kid.items():
@@ -368,7 +366,6 @@ class CampaignService:
         seen_offer_ids: set[UUID] = set()
 
         for remote_binding in remote.offers:
-            # в ответе Keitaro: id привязки != offer_id
             offer: Offer | None = offers_by_kid.get(remote_binding.offer_id)
             if offer is None:
                 logger.warning(
@@ -390,14 +387,14 @@ class CampaignService:
                     deleted=False,
                 )
                 flow.offers.append(binding)
-                bindings_by_offer_id[offer.id] = binding  # защита от дублей
+                bindings_by_offer_id[offer.id] = binding  # protection against duplicates
             elif binding.synced is False:
                 if (binding.deleted, binding.share, binding.state) == (
                     False,
                     remote_binding.share,
                     state,
                 ):
-                    binding.synced = True  # локальная правка совпала с Keitaro
+                    binding.synced = True  # local edit matched Keitaro
                 else:
                     logger.warning(
                         "Pending local binding of offer %s in flow %s kept over Keitaro copy",
@@ -411,12 +408,11 @@ class CampaignService:
                 binding.deleted = False
 
         for binding in flow.offers:
-            # offer_id пуст только у новых привязок: они уже в seen_offer_ids
             if binding.offer_id is None or binding.offer_id in seen_offer_ids:
                 continue
             if binding.synced is False:
                 if binding.deleted:
-                    binding.synced = True  # локальное удаление уже совпадает с Keitaro
+                    binding.synced = True
                 else:
                     logger.warning(
                         "Pending local binding %s is absent in Keitaro flow %s, kept",

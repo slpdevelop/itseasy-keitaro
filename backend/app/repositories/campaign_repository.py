@@ -487,7 +487,6 @@ class CampaignRepository:
         if flow is None:
             raise FlowNotFoundError("Flow not found")
 
-        # Грузим только "живые" и ещё не подтверждённые tombstones.
         links = (
             await self._session.scalars(
                 select(FlowOffer)

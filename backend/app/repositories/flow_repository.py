@@ -30,10 +30,23 @@ class FlowRepository:
         return list((await self._session.scalars(stmt)).all())
 
     def add(self, flow: Flow) -> None:
+        """Add a flow entity to the current session for persistence.
+
+        Args:
+            flow: Flow entity to persist.
+        """
         self._session.add(flow)
 
     async def delete(self, flow: Flow) -> None:
-        await self._session.delete(flow)  # FlowOffer удалятся через delete-orphan
+        """Delete a flow entity from the database (soft or hard depending on cascade).
+
+        FlowOffers are deleted via delete-orphan cascade.
+
+        Args:
+            flow: Flow entity to delete.
+        """
+        await self._session.delete(flow)  # FlowOffers deleted via delete-orphan
 
     async def flush(self) -> None:
+        """Flush pending changes to the database without committing the transaction."""
         await self._session.flush()

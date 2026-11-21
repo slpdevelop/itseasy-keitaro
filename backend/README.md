@@ -1,13 +1,13 @@
 # Keitaro Campaign Manager - Backend
 
-FastAPI backend для управления кампаниями Keitaro.
+FastAPI backend for managing Keitaro campaigns.
 
-## Требования
+## Requirements
 
 - Python 3.13+
-- pip (менеджер пакетов)
+- pip (package manager)
 
-## Установка
+## Installation
 
 ```bash
 cd backend
@@ -18,137 +18,137 @@ source .venv/bin/activate    # Unix
 pip install -e ".[dev,test]"
 ```
 
-## Конфигурация
+## Configuration
 
-Создайте `backend/.env` на основе `.env.example`:
+Create `backend/.env` based on `.env.example`:
 
 ```bash
 cp backend/.env.example backend/.env
-# Отредактируйте backend/.env со своими значениями
+# Edit backend/.env with your values
 ```
 
-**Критически важно:** Никогда не коммить реальные секреты в Git!  
-Файлы `.env`, `.env.*` и `backend/.env*` исключены из Git через `.gitignore`.
+**Important:** Never commit real secrets to Git!  
+Files `.env`, `.env.*` and `backend/.env*` are excluded from Git via `.gitignore`.
 
-### Обязательные переменные окружения:
+### Required environment variables:
 
-- `APP_NAME` — название приложения
-- `KEITARO_BASE_URL` — URL API Keitaro
+- `APP_NAME` — application name
+- `KEITARO_BASE_URL` — Keitaro API URL
 
-Для разработки Keitaro API token не требуется. Для production настройте `KEITARO_API_TOKEN`.
+For development, Keitaro API token is not required. For production, configure `KEITARO_API_TOKEN`.
 
-## Запуск через Docker (рекомендуется)
+## Running with Docker (recommended)
 
-Весь стек (PostgreSQL + FastAPI backend + React frontend) запускается одной командой:
+The entire stack (PostgreSQL + FastAPI backend + React frontend) starts with one command:
 
 ```bash
 cd backend
-docker compose up -d --build   # сборка образов и запуск БД + backend + frontend
-docker compose ps              # все три сервиса должны быть healthy
-docker compose logs -f app     # логи backend
+docker compose up -d --build   # build images and start DB + backend + frontend
+docker compose ps              # all three services should be healthy
+docker compose logs -f app     # backend logs
 docker compose logs -f frontend
-docker compose down            # остановить (данные БД сохраняются в volume)
+docker compose down            # stop (database data persists in volume)
 ```
 
 - Backend (FastAPI): `http://localhost:8000` (health: `/health`, docs: `/docs`)
-- Frontend (React + Vite, nginx): `http://localhost:5173` — проксирует `/api` на backend
-- PostgreSQL: `localhost:5432`, база создаётся автоматически при старте
-- Настройки берутся из `backend/.env` (через `env_file`); секреты не попадают
-  в образ (исключены через `.dockerignore`)
-- Порядок старта: PostgreSQL → healthcheck → backend (применяются Alembic-миграции,
-  затем стартует uvicorn) → frontend; frontend ждёт, пока backend станет healthy
+- Frontend (React + Vite, nginx): `http://localhost:5173` — proxies `/api` to backend
+- PostgreSQL: `localhost:5432`, database created automatically on startup
+- Settings are read from `backend/.env` (via `env_file`); secrets do not end up
+  in the image (excluded via `.dockerignore`)
+- Startup order: PostgreSQL → healthcheck → backend (Alembic migrations applied,
+  then uvicorn starts) → frontend; frontend waits until backend becomes healthy
 
-## Запуск локально (без Docker для приложения)
+## Running locally (without Docker for the application)
 
 ```bash
 cd backend
-docker compose up -d           # только PostgreSQL
+docker compose up -d           # only PostgreSQL
 
-# В активированном venv
+# In activated venv
 uvicorn app.asgi:app --reload --port 8000
 ```
 
-API доступно по адресу `http://localhost:8000/api/v1`  
-OpenAPI документация (только для dev): `http://localhost:8000/docs`
+API is available at `http://localhost:8000/api/v1`  
+OpenAPI documentation (dev only): `http://localhost:8000/docs`
 
 ## PostgreSQL (Docker)
 
-БД поднимается через Docker Compose (файл `docker-compose.yml`):
+The database is started via Docker Compose (file `docker-compose.yml`):
 
 ```bash
 cd backend
-docker compose up -d     # запуск PostgreSQL
-docker compose ps        # статус (healthy)
-docker compose down      # остановить (данные сохраняются в volume)
+docker compose up -d     # start PostgreSQL
+docker compose ps        # status (healthy)
+docker compose down      # stop (data persists in volume)
 ```
 
-Настройки берутся из `backend/.env`: `USE_POSTGRESQL=True` и `POSTGRES_*`
-(`POSTGRES_PASSWORD` обязателен и должен совпадать с паролем контейнера).
+Settings are read from `backend/.env`: `USE_POSTGRESQL=True` and `POSTGRES_*`
+(`POSTGRES_PASSWORD` is required and must match the container password).
 
-При старте приложения в `lifespan`:
+On application startup in `lifespan`:
 
-- создаётся база данных (если её ещё нет);
-- устанавливается и проверяется подключение (`SELECT 1`);
-- при недоступности БД запуск завершается ошибкой (попытки повторяются,
-  пока контейнер стартует);
-- при остановке приложения соединение корректно закрывается.
+- database is created (if it does not exist yet);
+- connection is established and verified (`SELECT 1`);
+- if the database is unavailable, startup fails (retries until the container starts);
+- on application shutdown, the connection is closed properly.
 
-Если `USE_POSTGRESQL=False`, подключение к БД не устанавливается.
+If `USE_POSTGRESQL=False`, no database connection is established.
 
-## Тестирование
+## Testing
 
 ```bash
-# В активированном venv
+# In activated venv
 pytest app/tests/ -v --cov=app --cov-report=html
 ```
 
-Покрытие тестами: **86%** и выше.
+Test coverage: **86% and above**.
 
-## Структура проекта
+## Project structure
 
 ```
 backend/
-├── app/                     # FastAPI приложение
-│   ├── main.py              # Точка входа FastAPI
-│   ├── api/                 # Маршруты
-│   ├── core/                # Конфигурация, БД, исключения
-│   ├── integrations/        # Адаптеры Keitaro
-│   ├── interfaces/          # Protocol-контракты gateway
-│   ├── repositories/        # SQLAlchemy репозитории
-│   ├── schemas/             # Pydantic схемы
-│   ├── services/            # Бизнес-сервисы
-│   └── tests/               # Тесты
-├── alembic/                 # Миграции БД
-├── .env.example             # Пример конфигурации (скопируйте в .env)
-├── .env                     # Ваши секреты (не коммитить!)
+├── app/                     # FastAPI application
+│   ├── main.py              # FastAPI entry point
+│   ├── api/                 # Routes
+│   ├── core/                # Configuration, database, exceptions
+│   ├── integrations/        # Keitaro adapters
+│   ├── interfaces/          # Protocol contracts for gateways
+│   ├── repositories/        # SQLAlchemy repositories
+│   ├── schemas/             # Pydantic schemas
+│   ├── services/            # Business services
+│   └── tests/               # Tests
+├── alembic/                 # Database migrations
+├── .env.example             # Configuration example (copy to .env)
+├── .env                     # Your secrets (do not commit!)
 ├── .dockerignore
-├── Dockerfile               # Образ backend
+├── Dockerfile               # Backend image
 ├── alembic.ini
-├── docker-compose.yml       # Стек: PostgreSQL + backend + frontend
+├── docker-compose.yml       # Stack: PostgreSQL + backend + frontend
 ├── pyproject.toml
 └── README.md
+```
 
 frontend/
-├── src/                     # React + Vite исходники
+├── src/                     # React + Vite sources
 ├── index.html
 ├── .env                     # VITE_API_BASE_URL
 ├── .dockerignore
-├── Dockerfile               # Сборка Vite + отдача через nginx
-├── nginx.conf               # Прокси /api на backend, SPA fallback
+├── Dockerfile               # Vite build + served via nginx
+├── nginx.conf               # Proxies /api to backend, SPA fallback
 ├── package.json
 └── README.md
 ```
 
-## План разработки
+## Development plan
 
-См. [PLAN.md](../PLAN.md) для деталей реализации:
+See [`PLAN.md`](../PLAN.md) for implementation details:
 
-- **Этап 0:** Анализ репозитория ✅
-- **Этап 1:** Python окружение ✅
-- **Этап 2:** Каркас FastAPI ✅
-- **Этап 3:** Конфигурация и безопасность ✅
-- **Этап 4+:** В разработке
+- **Stage 0:** Repository analysis ✅
+- **Stage 1:** Python environment ✅
+- **Stage 2:** FastAPI scaffold ✅
+- **Stage 3:** Configuration and security ✅
+- **Stage 4+:** In development
 
-## Лицензия
+## License
 
 [ICVR license](../ICVR_LICENSE)

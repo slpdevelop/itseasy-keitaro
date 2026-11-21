@@ -193,14 +193,13 @@ class RemoteCampaign(BaseModel):
     traffic_source_id: int | None = None
 
 
-# keitaro_id: поправьте тип, если у вас str
 KeitaroFlowId = int
 
 
 class SyncErrorStage(StrEnum):
-    VALIDATION = "validation"  # не прошла проверка payload до отправки
-    PUSH = "push"  # упал вызов Keitaro, ничего не отправлено
-    MARK_SYNCED = "mark_synced"  # в Keitaro ушло, но отметка в БД не сохранилась
+    VALIDATION = "validation"  # payload validation failed before sending
+    PUSH = "push"  # Keitaro call failed, nothing sent
+    MARK_SYNCED = "mark_synced"  # sent to Keitaro but DB mark not saved
 
 
 class SyncError(BaseModel):
@@ -208,40 +207,40 @@ class SyncError(BaseModel):
 
     flow_id: KeitaroFlowId
     stage: SyncErrorStage
-    error: str = Field(description="Имя класса исключения")
+    error: str = Field(description="Exception class name")
     message: Annotated[str, StringConstraints(max_length=500)] | None = Field(
         default=None,
-        description="Обрезанное сообщение, без секретов и токенов",
+        description="Trimmed message, without secrets and tokens",
     )
 
 
 class SyncResult(BaseModel):
-    campaign_id: KeitaroFlowId = Field(description="Keitaro ID кампании, чьи флоу синхронизировались")
-    flows_checked: Annotated[int, Field(ge=0, description="Сколько флоу было в выборке")] = 0
-    flows_synced: Annotated[int, Field(ge=0, description="Полностью подтверждены")] = 0
+    campaign_id: KeitaroFlowId = Field(
+        description="Keitaro ID of the campaign whose flows were synced"
+    )
+    flows_checked: Annotated[int, Field(ge=0, description="Number of flows in the sample")] = 0
+    flows_synced: Annotated[int, Field(ge=0, description="Fully confirmed")] = 0
     flows_still_pending: Annotated[
         list[KeitaroFlowId],
-        Field(default_factory=list, description="Уйдут на следующем проходе"),
+        Field(default_factory=list, description="Will go on the next pass"),
     ]
     flows_not_found: Annotated[
         list[KeitaroFlowId],
-        Field(default_factory=list, description="Флоу удалён между выборкой и подтверждением"),
+        Field(default_factory=list, description="Flow deleted between selection and confirmation"),
     ]
     errors: Annotated[list[SyncError], Field(default_factory=list)]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def success(self) -> bool:
-        """Нет ошибок. Pending не считается ошибкой."""
+        """No errors. Pending is not counted as an error."""
         return not self.errors
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def fully_synced(self) -> bool:
-        """Нет ни ошибок, ни хвостов: всё, что было, подтверждено."""
+        """No errors and no leftovers: everything that was is confirmed."""
         return not self.errors and not self.flows_still_pending and not self.flows_not_found
-
-    # --- хелперы, чтобы не раскидывать логику по sync_campaign ---
 
     def add_error(
         self,
@@ -260,7 +259,7 @@ class SyncResult(BaseModel):
 
 
 class OfferPayload(BaseModel):
-    """Один оффер в теле PUT-запроса в Keitaro."""
+    """One offer in the PUT request body to Keitaro."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -270,7 +269,7 @@ class OfferPayload(BaseModel):
 
 
 class PushedLink(BaseModel):
-    """Значения binding на момент отправки. Подтверждаются только при точном совпадении."""
+    """Binding values at the time of sending. Confirmed only on exact match."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -290,26 +289,26 @@ class FlowPush(BaseModel):
     keitaro_id: int
     offers: Annotated[
         list[OfferPayload],
-        Field(default_factory=list, description="Тело PUT: только не удалённые bindings"),
+        Field(default_factory=list, description="PUT body: only non-deleted bindings"),
     ]
     pushed: Annotated[
         dict[UUID, PushedLink],
         Field(
             default_factory=dict,
-            description="Все загруженные bindings, включая tombstones: link.id -> значения",
+            description="All loaded bindings, including tombstones: link.id -> values",
         ),
     ]
 
     @model_validator(mode="after")
     def check_shares_total(self) -> Self:
-        """Keitaro принимает только распределение ровно в 100%; пустой список допустим."""
+        """Keitaro accepts only exactly 100% distribution; empty list is allowed."""
         if self.offers and sum(offer.share for offer in self.offers) != 100:
             raise ValueError("Offer shares of a flow must total exactly 100")
         return self
 
     @classmethod
     def from_flow(cls, flow: Any) -> "FlowPush":
-        """Строить только внутри открытой сессии: читает flow.offers и link.offer."""
+        """Build only within an open session: reads flow.offers and link.offer."""
         return cls(
             flow_id=flow.id,
             keitaro_id=flow.keitaro_id,
@@ -334,5 +333,5 @@ class FlowPush(BaseModel):
 
     @property
     def pushed_fingerprints(self) -> dict[UUID, tuple[int, str, bool]]:
-        """Формат, который ждёт CampaignRepository.mark_flow_synced."""
+        """Format expected by CampaignRepository.mark_flow_synced."""
         return {link_id: link.fingerprint for link_id, link in self.pushed.items()}
