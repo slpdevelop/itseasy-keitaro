@@ -32,6 +32,14 @@ class OfferRepository:
         """
         self.session = session
 
+    async def get_map_by_keitaro_ids(self, keitaro_ids: list[int]) -> dict[int, Offer]:
+        ids = set(keitaro_ids)
+        if not ids:
+            return {}
+        stmt = select(Offer).where(Offer.keitaro_id.in_(ids))
+        offers = (await self.session.scalars(stmt)).all()
+        return {o.keitaro_id: o for o in offers}
+
     async def get_all(self, *, include_deleted: bool = False) -> list[Offer]:
         """Retrieve all offers from local database (optionally including deleted).
 
