@@ -21,8 +21,12 @@ from pydantic import (
 class KTCampaignCreateRequest(BaseModel):
     """Request body for creating a campaign via Keitaro API.
 
-    Contains minimal required fields for campaign creation with offer bindings.
-    Used by POST /api/v1/campaigns endpoint to initiate new campaign in Keitaro.
+    Args:
+        name: Campaign name (1-255 characters).
+        country_code: Two-letter ISO country code.
+        offer_id_list: List of existing Keitaro offer IDs to bind.
+
+    Used by POST /api/v1/campaigns to initiate a new campaign in Keitaro.
     """
 
     name: str = Field(min_length=1, max_length=255)
@@ -32,7 +36,17 @@ class KTCampaignCreateRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def strip_name(cls, value: str) -> str:
-        """Remove leading/trailing whitespace and reject blank names."""
+        """Strip whitespace and reject blank names.
+
+        Args:
+            value: Raw campaign name.
+
+        Returns:
+            Stripped campaign name.
+
+        Raises:
+            ValueError: If the name is blank after stripping.
+        """
         value = value.strip()
         if not value:
             raise ValueError("Campaign name cannot be blank")
@@ -40,26 +54,31 @@ class KTCampaignCreateRequest(BaseModel):
 
 
 def generate_code(length: int = 10) -> str:
-    """Generate random alphanumeric string for campaign alias.
-
-    Uses cryptographically secure random selection from ASCII letters and digits.
+    """Generate a random alphanumeric campaign alias.
 
     Args:
-        length: Number of characters to generate (default: 10).
+        length: Number of characters in the generated string (default: 10).
 
     Returns:
-        Random string suitable for use as campaign or flow identifier.
+        Random string suitable for use as a campaign or flow identifier.
     """
     alphabet: LiteralString = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 class CampaignCreatePayload(BaseModel):
-    """Application input schema for creating a new campaign.
+    """Application input schema for building a campaign before sending to Keitaro.
 
-    Used when building campaign objects locally before sending to Keitaro API.
-    Contains all required fields including aliases generated automatically and
-    configuration defaults from application settings.
+    Contains all required fields including an auto-generated alias and
+    configuration defaults taken from application settings.
+
+    Args:
+        name: Campaign name (1-255 characters).
+        alias: Auto-generated campaign alias.
+        domain_id: Keitaro domain ID.
+        group_id: Keitaro group ID.
+        traffic_source_id: Keitaro traffic source ID.
+        state: Campaign state, one of active/disabled/deleted (default: active).
     """
 
     name: str = Field(min_length=1, max_length=255)
@@ -72,7 +91,17 @@ class CampaignCreatePayload(BaseModel):
     @field_validator("name")
     @classmethod
     def strip_name(cls, value: str) -> str:
-        """Remove leading/trailing whitespace and reject blank names."""
+        """Strip whitespace and reject blank names.
+
+        Args:
+            value: Raw campaign name.
+
+        Returns:
+            Stripped campaign name.
+
+        Raises:
+            ValueError: If the name is blank after stripping.
+        """
         value = value.strip()
         if not value:
             raise ValueError("Campaign name cannot be blank")
@@ -80,10 +109,15 @@ class CampaignCreatePayload(BaseModel):
 
 
 class KTCampaignCreateResponse(Base):
-    """Response from campaign creation endpoint.
+    """Response from the campaign creation endpoint.
 
-    Indicates successful creation with campaign ID, prefixed name, and confirmation message.
-    Used as response model for POST /api/v1/campaigns returning 201 Created status.
+    Attributes:
+        success: Whether creation succeeded (default: True).
+        campaign_id: Numeric Keitaro campaign ID.
+        campaign_name: Campaign name with prefix applied.
+        message: Human-readable confirmation message.
+
+    Used as the response model for POST /api/v1/campaigns (201 Created).
     """
 
     success: bool = True
@@ -95,8 +129,12 @@ class KTCampaignCreateResponse(Base):
 class CampaignOfferDetailResponse(Base):
     """Offer details embedded in flow bindings within a campaign.
 
-    Contains minimal offer metadata required for display and binding operations.
-    Used when nesting offers inside CampaignFlowDetailResponse or CampaignDetailResponse.
+    Contains minimal offer metadata needed for display and binding operations.
+
+    Attributes:
+        id: Local database UUID of the offer.
+        keitaro_id: Keitaro numeric offer ID.
+        name: Offer display name.
     """
 
     id: UUID
@@ -108,7 +146,7 @@ class CampaignFlowOfferDetailResponse(Base):
     """Detailed flow-offer binding within a campaign flow.
 
     Represents a single offer attached to a flow with traffic share percentage
-    and active/disabled state. Nested inside CampaignFlowDetailResponse offers array.
+    and active/disabled state. Nested inside CampaignFlowDetailResponse.offers.
     """
 
     offer: CampaignOfferDetailResponse
@@ -124,15 +162,34 @@ class CampaignFlowOfferDetailResponse(Base):
     @field_validator("state", mode="before")
     @classmethod
     def serialize_state(cls, value: object) -> str:
-        """Convert enum or string to plain string for serialization."""
+        """Convert an enum or string value to a plain string for serialization.
+
+        Args:
+            value: Raw state value (enum member or string).
+
+        Returns:
+            String representation of the state.
+        """
         return value.value if hasattr(value, "value") else str(value)
 
 
 class CampaignFlowDetailResponse(Base):
     """Complete flow/stream details within a campaign.
 
-    Includes all flow configuration (type, position, schema/action) and nested
-    offer bindings. Used in CampaignDetailResponse to display campaign structure.
+    Includes flow configuration (type, position, schema/action) and nested
+    offer bindings. Used in CampaignFlowDetailResponse to display campaign structure.
+
+    Attributes:
+        id: Local database UUID of the flow.
+        keitaro_id: Keitaro numeric flow ID.
+        name: Flow display name.
+        type: Flow type (e.g., "geo", "offer").
+        position: Flow position index.
+        schema_: Flow schema alias (e.g., "redirect", "landings").
+        action_type: Keitaro action type.
+        action_payload: Flow action payload as text.
+        country: Two-letter country code for GEO flows, if any.
+        offers: List of offer bindings attached to this flow.
     """
 
     id: UUID
@@ -149,7 +206,14 @@ class CampaignFlowDetailResponse(Base):
     @field_validator("type", mode="before")
     @classmethod
     def serialize_type(cls, value: object) -> str | None:
-        """Convert enum or string to plain string for serialization."""
+        """Convert an enum or string value to a plain string for serialization.
+
+        Args:
+            value: Raw type value (enum member, string, or None).
+
+        Returns:
+            String representation of the type, or None if the value is None.
+        """
         if value is None:
             return None
         return value.value if hasattr(value, "value") else str(value)
@@ -158,9 +222,19 @@ class CampaignFlowDetailResponse(Base):
 class CampaignDetailResponse(Base):
     """Complete campaign details with flows and nested offer bindings.
 
-    Top-level response for GET /api/v1/campaigns/{campaign_id} including all
-    associated streams (GEO and OFFER flows) with their active offer allocations.
-    Used for displaying full campaign configuration in UI.
+    Top-level response for GET /api/v1/campaigns/{campaign_id}, including all
+    associated streams (GEO and OFFER flows) with their offer allocations.
+    Used for displaying full campaign configuration in the UI.
+
+    Attributes:
+        id: Local database UUID of the campaign.
+        keitaro_id: Keitaro numeric campaign ID.
+        name: Campaign name.
+        domain_keitaro_id: Keitaro domain ID, if assigned.
+        group_keitaro_id: Keitaro group ID, if assigned.
+        traffic_source_keitaro_id: Keitaro traffic source ID, if assigned.
+        fetched_at: Timestamp when the campaign was last fetched from Keitaro.
+        flows: List of flows belonging to this campaign.
     """
 
     id: UUID
@@ -197,12 +271,23 @@ KeitaroFlowId = int
 
 
 class SyncErrorStage(StrEnum):
+    """Stages at which a sync error can occur."""
+
     VALIDATION = "validation"  # payload validation failed before sending
     PUSH = "push"  # Keitaro call failed, nothing sent
     MARK_SYNCED = "mark_synced"  # sent to Keitaro but DB mark not saved
 
 
 class SyncError(BaseModel):
+    """Error record for a single flow during sync.
+
+    Attributes:
+        flow_id: Keitaro numeric ID of the flow where the error occurred.
+        stage: Sync stage where the error happened.
+        error: Exception class name.
+        message: Trimmed error message, without secrets or tokens (max 500 chars).
+    """
+
     model_config = ConfigDict(frozen=True)
 
     flow_id: KeitaroFlowId
@@ -215,6 +300,17 @@ class SyncError(BaseModel):
 
 
 class SyncResult(BaseModel):
+    """Result of a per-campaign flow sync operation.
+
+    Attributes:
+        campaign_id: Keitaro ID of the campaign whose flows were synced.
+        flows_checked: Number of flows examined during sync.
+        flows_synced: Number of flows fully confirmed as synced.
+        flows_still_pending: Flow IDs that still need another sync pass.
+        flows_not_found: Flow IDs deleted between selection and confirmation.
+        errors: Per-flow error records.
+    """
+
     campaign_id: KeitaroFlowId = Field(
         description="Keitaro ID of the campaign whose flows were synced"
     )
@@ -233,13 +329,13 @@ class SyncResult(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def success(self) -> bool:
-        """No errors. Pending is not counted as an error."""
+        """True if no errors occurred (pending flows are not counted as errors)."""
         return not self.errors
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def fully_synced(self) -> bool:
-        """No errors and no leftovers: everything that was is confirmed."""
+        """True if no errors and no pending or not-found flows remain."""
         return not self.errors and not self.flows_still_pending and not self.flows_not_found
 
     def add_error(
@@ -248,6 +344,13 @@ class SyncResult(BaseModel):
         stage: SyncErrorStage,
         exc: BaseException,
     ) -> None:
+        """Record an error for a flow at a given sync stage.
+
+        Args:
+            flow_id: Keitaro numeric ID of the flow.
+            stage: Sync stage where the error occurred.
+            exc: Exception that was raised.
+        """
         self.errors.append(
             SyncError(
                 flow_id=flow_id,
@@ -259,7 +362,13 @@ class SyncResult(BaseModel):
 
 
 class OfferPayload(BaseModel):
-    """One offer in the PUT request body to Keitaro."""
+    """One offer in the PUT request body to Keitaro.
+
+    Attributes:
+        offer_id: Keitaro numeric offer ID.
+        share: Traffic share percentage (must be >= 0).
+        state: Offer state string (e.g., "active", "disabled").
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -269,7 +378,15 @@ class OfferPayload(BaseModel):
 
 
 class PushedLink(BaseModel):
-    """Binding values at the time of sending. Confirmed only on exact match."""
+    """Binding values captured at the time of sending to Keitaro.
+
+    Confirmed only on exact match during mark_flow_synced.
+
+    Attributes:
+        share: Traffic share percentage.
+        state: Offer state string.
+        deleted: Whether the binding was marked as deleted.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -279,10 +396,20 @@ class PushedLink(BaseModel):
 
     @property
     def fingerprint(self) -> tuple[int, str, bool]:
+        """Return the (share, state, deleted) tuple used for comparison."""
         return (self.share, self.state, self.deleted)
 
 
 class FlowPush(BaseModel):
+    """Snapshot of a flow's offer bindings prepared for pushing to Keitaro.
+
+    Attributes:
+        flow_id: Local database UUID of the flow.
+        keitaro_id: Keitaro numeric flow ID.
+        offers: Offer payloads for the PUT body (non-deleted bindings only).
+        pushed: All loaded bindings including tombstones, keyed by link UUID.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     flow_id: UUID
@@ -301,14 +428,33 @@ class FlowPush(BaseModel):
 
     @model_validator(mode="after")
     def check_shares_total(self) -> Self:
-        """Keitaro accepts only exactly 100% distribution; empty list is allowed."""
+        """Validate that offer shares total exactly 100%.
+
+        Keitaro accepts only exactly 100% distribution; an empty offer list is allowed.
+
+        Returns:
+            The validated FlowPush instance.
+
+        Raises:
+            ValueError: If offers are non-empty and shares do not total 100.
+        """
         if self.offers and sum(offer.share for offer in self.offers) != 100:
             raise ValueError("Offer shares of a flow must total exactly 100")
         return self
 
     @classmethod
     def from_flow(cls, flow: Any) -> "FlowPush":
-        """Build only within an open session: reads flow.offers and link.offer."""
+        """Build a FlowPush from an ORM flow instance.
+
+        Must be called within an open session so flow.offers and link.offer
+        are accessible.
+
+        Args:
+            flow: ORM Flow instance with loaded offers relationship.
+
+        Returns:
+            FlowPush populated from the flow's bindings.
+        """
         return cls(
             flow_id=flow.id,
             keitaro_id=flow.keitaro_id,
@@ -333,5 +479,6 @@ class FlowPush(BaseModel):
 
     @property
     def pushed_fingerprints(self) -> dict[UUID, tuple[int, str, bool]]:
-        """Format expected by CampaignRepository.mark_flow_synced."""
+        """Return link fingerprints in the format expected by
+        CampaignRepository.mark_flow_synced."""
         return {link_id: link.fingerprint for link_id, link in self.pushed.items()}
