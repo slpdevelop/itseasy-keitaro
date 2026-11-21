@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from app.core.exceptions import CampaignCreationError, CampaignNotFoundError, InvalidRequestError
+from app.core.exceptions import CampaignCreationError, InvalidRequestError
 from app.models.models import Campaign, Flow, FlowOffer, Offer
 from app.repositories.flow_repository import FlowRepository
 from app.schemas.campaign import (
@@ -16,13 +16,13 @@ from app.schemas.campaign import (
     KTCampaignCreateRequest,
     CampaignDetailResponse,
 )
-from app.services.flow_service import FlowService
 from app.repositories.campaign_repository import CampaignRepository
 from app.core.config import Settings
 from app.integrations.campaign_gateway import KeitaroCampaignGateway
 from app.integrations.flow_gateway import KeitaroFlowGateway
 from app.integrations.keitaro import KeitaroGateway
 from app.repositories.offer_repository import OfferRepository
+from app.schemas.flow import FlowCreate, FlowFilter
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -158,17 +158,21 @@ class CampaignService:
         Raises:
             CampaignNotFoundError: If campaign not found locally.
         """
-        campaign_repository = CampaignRepository(session_factory=self.db_session)
-        campaign: Campaign | None = await campaign_repository.get_campaign_detail(campaign_id)
-        if campaign is None:
-            keitaro_campaign: dict | None = await self.gateway.get_by_id(campaign_id)
-            campaign = campaign_repository.create_campaign(keitaro_campaign)
+        async with self.db_session() as session, session.begin():
+            campaign_repository = CampaignRepository(session=session)
+            campaign: Campaign | None = await campaign_repository.get_campaign_detail(campaign_id)
+            if campaign is None:
+                keitaro_campaign: dict | None = await self.gateway.get_by_id(campaign_id)
+                campaign = campaign_repository.create_or_update_campaign(keitaro_campaign)
 
         return campaign
 
     async def fetch_campaign(self, campaign_keitaro_id: int) -> Campaign:
         remote_campaign, remote_flows = await self._fetch_remote(campaign_keitaro_id)
-        fetched_at = datetime.now(timezone.utc)
+        offer_ids: list[int] = self._get_raw_offer_ids(remote_flows)
+        missing_offers: list[dict] | None = await self._get_missing_offers(offer_ids)
+
+        fetched_at: datetime = datetime.now(timezone.utc)
 
         async with self.db_session() as session, session.begin():
             campaigns = CampaignRepository(session)
@@ -177,17 +181,13 @@ class CampaignService:
 
             campaign: Campaign = await campaigns.create_or_update_campaign(remote_campaign)
 
-            offer_ids: list[int] = self._get_raw_offer_ids(remote_flows)
-            missing_offers: list[dict] | None = await self._get_missing_offers(offer_ids)
-
             if missing_offers:
                 await offers.bulk_create(offers=missing_offers, fetched_at=fetched_at)
 
-            offers_by_kid = await offers.get_map_by_keitaro_ids(
-                offer.offer_keitaro_id for rf in remote_flows for offer in rf.get("offers", [])
-            )
+            offers_by_kid: dict[int, Offer] = await offers.get_map_by_keitaro_ids(offer_ids)
+
             await self._reconcile_flows(flows, campaign, remote_flows, offers_by_kid, fetched_at)
-            await flows.flush()
+            session.flush()
             return campaign
 
     async def _reconcile_flows(
@@ -208,7 +208,7 @@ class CampaignService:
                 flows.add(flow)
 
             flow.name = remote["name"]
-            flow.type = "geo" if not remote.get("offers", None) else "offer"
+            flow.type = "offer" if remote.get("offers") else "geo"
             flow.position = i
             flow.schema = remote["schema"]
             flow.action_type = remote["action_type"]
@@ -217,43 +217,42 @@ class CampaignService:
             flow.synced = True
             flow.deleted = False
 
-            await self._reconcile_offers(flow, remote, offers_by_kid)
+            self._reconcile_offers(flow, remote, offers_by_kid)
 
         for kid, flow in local_by_kid.items():
             if kid not in remote_ids:
-                await flows.delete(flow)
+                flows.delete(flow=flow)
 
-    async def _reconcile_offers(
-        self, flow: Flow, remote: dict, offers_by_kid: dict[int, Offer]
-    ) -> None:
-
-        if not remote.get("offers", []):
-            return
-
-        bindings_by_offer_id = {b.offer_id: b for b in flow.get("offers", [])}
+    def _reconcile_offers(self, flow: Flow, remote: dict, offers_by_kid: dict[int, Offer]) -> None:
+        bindings_by_offer_id = {b.offer_id: b for b in flow.offers}
         seen_offer_ids: set[int] = set()
 
-        for rb in remote.get("offers"):
-            offer = offers_by_kid.get(rb.offer_keitaro_id)
+        for rb in remote.get("offers") or []:
+            offer_keitaro_id = rb["offer_id"]  # в ответе Keitaro: id привязки != offer_id
+            offer: Offer | None = offers_by_kid.get(offer_keitaro_id)
             if offer is None:
                 logger.warning(
                     "Offer %s from flow %s not found locally, skipping",
-                    rb.offer_keitaro_id,
-                    remote.keitaro_id,
+                    offer_keitaro_id,
+                    remote["id"],
                 )
                 continue
             seen_offer_ids.add(offer.id)
 
-            binding = bindings_by_offer_id.get(offer.id)
+            binding: FlowOffer | None = bindings_by_offer_id.get(offer.id)
             if binding is None:
-                flow.offers.append(
-                    FlowOffer(
-                        offer=offer, share=rb.share, state=rb.state, synced=True, deleted=False
-                    )
+                binding = FlowOffer(
+                    offer=offer,
+                    share=rb["share"],
+                    state=rb["state"],
+                    synced=True,
+                    deleted=False,
                 )
+                flow.offers.append(binding)
+                bindings_by_offer_id[offer.id] = binding  # защита от дублей
             else:
-                binding.share = rb.share
-                binding.state = rb.state
+                binding.share = rb["share"]
+                binding.state = rb["state"]
                 binding.synced = True
                 binding.deleted = False
 
@@ -262,42 +261,48 @@ class CampaignService:
                 binding.deleted = True
 
     async def _fetch_remote(self, keitaro_id: int) -> tuple[dict, list[dict]]:
-        remote_campaign = await KeitaroCampaignGateway(self.gateway).get_by_id(keitaro_id)
-        remote_flows = await KeitaroFlowGateway(self.gateway).get_campaign_flows(keitaro_id)
+        remote_campaign, remote_flows = await asyncio.gather(
+            KeitaroCampaignGateway(self.gateway).get_by_id(keitaro_id),
+            KeitaroFlowGateway(self.gateway).get_campaign_flows(keitaro_id),
+        )
         return remote_campaign, remote_flows
 
     def _get_raw_offer_ids(self, flows: list[dict]) -> list[int]:
-        remote_offer_ids: set = set()
+        remote_offer_ids: set[int] = set()
         for flow in flows:
-            if flow.get("offers", []):
-                for offer in flow.get("offers"):
-                    remote_offer_ids.add(offer["id"])
-
+            for offer in flow.get("offers") or []:
+                remote_offer_ids.add(offer["offer_id"])
         return list(remote_offer_ids)
 
     async def _get_missing_offers(self, offer_ids: list[int]) -> list[dict] | None:
-        flow_gateway = KeitaroFlowGateway(self.gateway)
+        if not offer_ids:
+            return None
 
         async with self.db_session() as session, session.begin():
-            offers = OfferRepository(session)
-            missing_offer_ids: set[int] = await offers.get_missing_keitaro_ids(offer_ids)
+            missing_offer_ids: set[int] = await OfferRepository(session).get_missing_keitaro_ids(
+                offer_ids
+            )
 
-        missing_offers = None
-        if missing_offer_ids:
-            sem = asyncio.Semaphore(10)
+        if not missing_offer_ids:
+            return None
 
-            async def _get_offer(oid: int) -> dict:
-                async with sem:
+        flow_gateway = KeitaroFlowGateway(self.gateway)
+        sem = asyncio.Semaphore(10)
+
+        async def _get_offer(oid: int) -> dict | None:
+            async with sem:
+                try:
                     return await flow_gateway.get_offer_details(oid)
+                except Exception:
+                    # Один упавший оффер не должен отменять остальные запросы.
+                    logger.exception("Failed to fetch offer %s from Keitaro", oid)
+                    return None
 
-            fetched: list[dict] = await asyncio.gather(
-                *(_get_offer(oid) for oid in missing_offer_ids)
-            )
-            missing_offers: list[dict] = list(
-                {o.get("id"): o for o in fetched if o is not None}.values()
-            )
-
-        return missing_offers
+        fetched: list[dict | None] = await asyncio.gather(
+            *(_get_offer(oid) for oid in missing_offer_ids)
+        )
+        unique = {o["id"]: o for o in fetched if o is not None}
+        return list(unique.values()) or None
 
     async def create_campaign(self, data: KTCampaignCreateRequest) -> KTCampaignCreateResponse:
         """Create campaign in Keitaro with GEO and OFFER flows using checkpoint recovery.
@@ -317,7 +322,7 @@ class CampaignService:
         Returns:
             KTCampaignCreateResponse with campaign ID and confirmation message.
         """
-        campaign_name = self._build_campaign_name(data.name)
+        campaign_name: str = self._build_campaign_name(data.name)
         cp = Checkpoint(key=campaign_name)
 
         campaign_id = await cp.run(
@@ -391,7 +396,8 @@ class CampaignService:
             traffic_source_id=self.settings.campaign_traffic_source_id,
             state="active",
         )
-        response = await self.gateway.create_campaign(payload)
+        gateway = KeitaroCampaignGateway(self.gateway)
+        response = await gateway.create_campaign(payload)
         campaign_id = response.get("id") if isinstance(response, dict) else None
         if not isinstance(campaign_id, int) or campaign_id <= 0:
             raise CampaignCreationError("Keitaro did not return a valid campaign id")
@@ -411,7 +417,17 @@ class CampaignService:
         Returns:
             Dictionary containing GEO flow details from Keitaro API.
         """
-        return await self.flow_service.create_geo_flow(campaign_id, country_code)
+        gateway = KeitaroFlowGateway(self.gateway)
+
+        geo_code = country_code.strip().upper()
+        geo_flow_data = FlowCreate(
+            campaign_id=campaign_id,
+            name=f"Geo {geo_code} -> Google",
+            action_payload="https://google.com",
+            schema="redirect",
+            filters=[FlowFilter(name="country", mode="accept", payload=[geo_code])],
+        )
+        return await gateway.create_flow(geo_flow_data)
 
     async def _create_offer_flow(self, campaign_id: int, offer_id_list: list[int]) -> dict:
         """Create OFFER flow with specified offer bindings within campaign.
@@ -426,7 +442,25 @@ class CampaignService:
         Returns:
             Dictionary containing OFFER flow details from Keitaro API.
         """
-        return await self.flow_service.create_offer_flow(campaign_id, offer_id_list)
+        gateway = KeitaroFlowGateway(self.gateway)
+        if not offer_id_list:
+            raise InvalidRequestError("At least one offer is required to create an offer stream")
+        base, remainder = divmod(100, len(offer_id_list))
+        remainder_start = len(offer_id_list) - remainder
+        offers = [
+            FlowOffer(
+                offer_id=offer_id,
+                share=base + (1 if index >= remainder_start else 0),
+            )
+            for index, offer_id in enumerate(offer_id_list)
+        ]
+        offer_flow_data = FlowCreate(
+            campaign_id=campaign_id,
+            name="Offers",
+            schema="landings",
+            offers=offers,
+        )
+        return await gateway.create_flow(offer_flow_data)
 
     async def _save_campaign_to_db(
         self,
@@ -449,13 +483,15 @@ class CampaignService:
             geo_flow: Complete GEO flow dictionary from Keitaro response.
             offer_flow: OFFER flow dictionary with nested offer bindings.
         """
-        await self.campaign_repo.save_created_campaign(
-            keitaro_id=campaign_id,
-            name=campaign_name,
-            domain_keitaro_id=self.settings.campaign_domain_id,
-            group_keitaro_id=self.settings.campaign_group_id,
-            traffic_source_keitaro_id=self.settings.campaign_traffic_source_id,
-            country_code=country_code,
-            geo_flow=geo_flow,
-            offer_flow=offer_flow,
-        )
+        async with self.db_session() as session, session.begin():
+            campaigns = CampaignRepository(session)
+            await campaigns.save_created_campaign(
+                keitaro_id=campaign_id,
+                name=campaign_name,
+                domain_keitaro_id=self.settings.campaign_domain_id,
+                group_keitaro_id=self.settings.campaign_group_id,
+                traffic_source_keitaro_id=self.settings.campaign_traffic_source_id,
+                country_code=country_code,
+                geo_flow=geo_flow,
+                offer_flow=offer_flow,
+            )
