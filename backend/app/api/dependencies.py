@@ -48,7 +48,7 @@ def get_campaign_service(
     return CampaignService(
         api=api,
         settings=settings,
-        db_session=request.app.state.session_factory,
+        session_factory=request.app.state.session_factory,
     )
 
 

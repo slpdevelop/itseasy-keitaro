@@ -137,11 +137,11 @@ class CampaignService:
         self,
         api: "KeitaroAPI",
         settings: "Settings",
-        db_session: "async_sessionmaker[AsyncSession]",
+        session_factory: "async_sessionmaker[AsyncSession]",
     ) -> None:
         self.api: KeitaroGateway = api
         self.settings: Settings = settings
-        self.db_session: "async_sessionmaker[AsyncSession]" = db_session
+        self.session_factory: "async_sessionmaker[AsyncSession]" = session_factory
 
     async def get_campaigns(self) -> list[dict]:
         """Fetch campaigns from Keitaro filtered by name prefix setting.
@@ -176,7 +176,7 @@ class CampaignService:
         Raises:
             KeitaroError: If the campaign must be imported and Keitaro fails.
         """
-        async with self.db_session() as session, session.begin():
+        async with self.session_factory() as session, session.begin():
             campaigns = CampaignRepository(session)
             campaign: Campaign | None = await campaigns.get_campaign_detail(campaign_id)
             if campaign is not None:
@@ -211,7 +211,7 @@ class CampaignService:
         offer_ids: set[int] = self._get_remote_offer_ids(remote_flows)
 
         # 2. Read phase
-        async with self.db_session() as session, session.begin():
+        async with self.session_factory() as session, session.begin():
             offers = OfferRepository(session)
             missing_offer_ids: set[int] = await offers.get_missing_keitaro_ids(offer_ids)
 
@@ -220,7 +220,7 @@ class CampaignService:
 
         # 4. Write phase
         fetched_at: datetime = datetime.now(timezone.utc)
-        async with self.db_session() as session, session.begin():
+        async with self.session_factory() as session, session.begin():
             campaigns = CampaignRepository(session)
             flows = FlowRepository(session)
             offers = OfferRepository(session)
@@ -242,7 +242,7 @@ class CampaignService:
             await flows.flush()
 
         # 5. Read phase
-        async with self.db_session() as session, session.begin():
+        async with self.session_factory() as session, session.begin():
             campaigns = CampaignRepository(session)
             saved: Campaign | None = await campaigns.get_campaign_detail(campaign_keitaro_id)
             if saved is None:
@@ -597,7 +597,7 @@ class CampaignService:
             geo_flow: Complete GEO flow dictionary from Keitaro response.
             offer_flow: OFFER flow dictionary with nested offer bindings.
         """
-        async with self.db_session() as session, session.begin():
+        async with self.session_factory() as session, session.begin():
             campaigns = CampaignRepository(session)
             await campaigns.save_created_campaign(
                 keitaro_id=campaign_id,
@@ -632,7 +632,7 @@ class CampaignService:
             CampaignNotFoundError: If the campaign is not stored locally.
         """
         # 1. Read phase
-        async with self.db_session() as session, session.begin():
+        async with self.session_factory() as session, session.begin():
             campaigns = CampaignRepository(session)
             campaign: Campaign | None = await campaigns.get_by_keitaro_id(campaign_keitaro_id)
             if campaign is None:
@@ -667,7 +667,7 @@ class CampaignService:
 
             # 3. Write phase
             try:
-                async with self.db_session() as session, session.begin():
+                async with self.session_factory() as session, session.begin():
                     campaigns = CampaignRepository(session)
                     confirmed: bool = await campaigns.mark_flow_synced(
                         item.flow_id, item.pushed_fingerprints
@@ -703,7 +703,7 @@ class CampaignService:
             if state == "deleted" and not item.get("deleted", False):
                 raise InvalidRequestError("Deleted state requires deleted=true")
         try:
-            async with self.db_session() as session, session.begin():
+            async with self.session_factory() as session, session.begin():
                 repository = CampaignRepository(session)
                 flow = await repository.update_flow_offers(flow_id, offers)
                 if flow is not None:
@@ -743,5 +743,5 @@ class CampaignService:
         Returns:
             List of Offer entities ordered by name. Empty if none found.
         """
-        async with self.db_session() as session:
+        async with self.session_factory() as session:
             return await OfferRepository(session).get_all(include_deleted=include_deleted)
