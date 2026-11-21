@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query
 
 from app.models.models import Offer
-from app.api.dependencies import CampaignServiceDep, KeitaroAPIDep
+from app.api.dependencies import ServiceDep, KeitaroAPIDep
 from app.schemas.offer import (
     LocalOfferListResponse,
 )
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/offers", tags=["Offers"])
 
 @router.get("/local", response_model=LocalOfferListResponse)
 async def get_local_offers(
-    service: CampaignServiceDep,
+    service: ServiceDep,
     include_deleted: bool = Query(default=False),
 ) -> LocalOfferListResponse:
     """Get locally stored offers (optional soft-deleted items).

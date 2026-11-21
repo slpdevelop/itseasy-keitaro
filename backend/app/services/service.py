@@ -50,7 +50,7 @@ class Checkpoint:
 
     Persists completed step results to disk between requests, enabling resume
     from the last successful step after failures or restarts. Used by
-    CampaignService.create_campaign() to handle partial failures safely.
+    Service.create_campaign() to handle partial failures safely.
 
     Storage location is fixed (not mkdtemp) so concurrent creation attempts can
     read each other's checkpoints for idempotency protection.
@@ -116,7 +116,7 @@ class Checkpoint:
             self._write(data)
 
 
-class CampaignService:
+class Service:
     """Business logic for campaign creation and lifecycle operations.
 
     Orchestrates multi-step campaign creation in Keitaro with checkpoint-based

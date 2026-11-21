@@ -6,7 +6,7 @@ from fastapi import Depends, Request
 from app.integrations.keitaro_api import KeitaroAPI
 from app.core.config import Settings, get_settings
 from app.integrations.keitaro_gateway import KeitaroGateway
-from app.services.campaign_service import CampaignService
+from app.services.service import Service
 
 
 def get_keitaro_api(request: Request) -> KeitaroAPI:
@@ -26,10 +26,10 @@ def get_keitaro_api(request: Request) -> KeitaroAPI:
 KeitaroAPIDep = Annotated[KeitaroAPI, Depends(get_keitaro_api)]
 
 
-def get_campaign_service(
+def get_service(
     api: KeitaroAPIDep, settings: Annotated[Settings, Depends(get_settings)], request: Request
-) -> CampaignService:
-    """Create and inject CampaignService with all required dependencies.
+) -> Service:
+    """Create and inject Service with all required dependencies.
 
     Orchestrates multi-step campaign creation by combining gateway adapters for
     upstream communication, repository for persistence, and application settings
@@ -42,14 +42,14 @@ def get_campaign_service(
         campaign_repo: Repository for saving campaign entities locally.
 
     Returns:
-        Configured CampaignService instance ready for campaign operations.
+        Configured Service instance ready for campaign operations.
     """
 
-    return CampaignService(
+    return Service(
         api=api,
         settings=settings,
         session_factory=request.app.state.session_factory,
     )
 
 
-CampaignServiceDep = Annotated[CampaignService, Depends(get_campaign_service)]
+ServiceDep = Annotated[Service, Depends(get_service)]

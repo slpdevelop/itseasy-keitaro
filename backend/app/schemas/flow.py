@@ -45,7 +45,7 @@ class FlowCreate(BaseModel):
 
     Contains complete configuration for stream including type (GEO/OFFER),
     positioning, filtering schema, action rules, and optional offer bindings.
-    Used by CampaignService when initiating multi-step campaign creation.
+    Used by Service when initiating multi-step campaign creation.
     """
 
     model_config = ConfigDict(extra="forbid")

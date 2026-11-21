@@ -12,7 +12,7 @@ class KeitaroAPI:
     """Gateway for campaign CRUD operations in Keitaro.
 
     Wraps the parent KeitaroGateway to handle campaign-specific API endpoints.
-    Used by CampaignService for creating, fetching, and deleting campaigns.
+    Used by Service for creating, fetching, and deleting campaigns.
     Handles serialization of campaign payloads with exclude_none for clean requests.
 
     Args:
