@@ -23,10 +23,9 @@ export const api = {
   createCampaign: (payload) => request('/campaigns', { method: 'POST', body: JSON.stringify(payload) }),
   syncFromKeitaro: () => request('/offers/sync/from-keitaro', { method: 'POST' }),
   syncToKeitaro: () => request('/offers/sync/to-keitaro', { method: 'POST' }),
-  // This route is shown commented out in the supplied campaigns.py. Enable it in the backend
-  // (or change this path to the route your backend exposes) to persist flow-level offer edits.
-  updateFlow: (flow) => request(`/campaigns/streams/${flow.id}`, {
-    method: 'PUT', body: JSON.stringify(flow),
+  syncCampaign: (campaignId) => request(`/campaigns/${campaignId}/sync`, { method: 'POST' }),
+  updateFlow: (flowId, offers) => request(`/campaigns/streams/${flowId}`, {
+    method: 'PUT', body: JSON.stringify({ offers }),
   }),
 };
 
@@ -38,7 +37,11 @@ export function normalizeList(value) {
 }
 export function getId(item) { return item?.id ?? item?.campaign_id ?? item?.keitaro_id ?? item?.uuid; }
 export function getName(item) { return item?.name ?? item?.campaign_name ?? item?.title ?? `Company ${getId(item) ?? ''}`; }
-export function getGeo(item) { return item?.geo ?? item?.geo_code ?? item?.country ?? item?.country_code ?? '—'; }
+export function getGeo(item) {
+  const geoFlow = item?.flows?.find(flow => String(flow?.type ?? '').toLowerCase() === 'geo');
+  return item?.geo ?? item?.geo_code ?? item?.country ?? item?.country_code ?? geoFlow?.country ?? '—';
+}
+export function getKeitaroId(item) { return item?.keitaro_id ?? item?.campaign_id ?? item?.id ?? item?.uuid; }
 export function getFlows(detail) { return detail?.flows ?? detail?.streams ?? detail?.campaign?.flows ?? detail?.campaign?.streams ?? []; }
 export function getFlowOffers(flow) { return flow?.offers ?? flow?.offer_bindings ?? flow?.landings ?? []; }
 export function getOfferId(offer) { return offer?.offer_id ?? offer?.keitaro_id ?? offer?.id; }

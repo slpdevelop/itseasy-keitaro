@@ -1,6 +1,6 @@
 import { Activity, ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Building2, Check, ChevronDown, ChevronRight, CircleAlert, Database, Globe2, Layers3, LoaderCircle, Plus, RefreshCw, Search, Settings2, ShieldCheck, Trash2, X, Pin, PinOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, getFlowOffers, getFlows, getGeo, getId, getName, getOfferId, getOfferName, normalizeList } from './api';
+import { api, getFlowOffers, getFlows, getGeo, getId, getName, getOfferId, getOfferName, getKeitaroId, normalizeList } from './api';
 
 const fmt = (v) => v == null ? '—' : String(v);
 function Toast({toast, onClose}) { if (!toast) return null; return <div className={`toast ${toast.type}`}><span>{toast.type === 'error' ? <CircleAlert size={17}/> : <Check size={17}/>}</span><div>{toast.message}</div><button onClick={onClose}><X size={15}/></button></div>; }
@@ -38,7 +38,7 @@ export default function App() {
   useEffect(()=>{ loadCompanies(); loadOffers(); },[loadCompanies,loadOffers]);
 
   const openCompany = async (company) => {
-    const id=getId(company); setSelected(company); setDetail(null); setDetailLoading(true);
+    const id=getKeitaroId(company); setSelected(company); setDetail(null); setDetailLoading(true);
     try { setDetail(await api.campaign(id)); }
     catch(e) { notify(`Не удалось загрузить компанию: ${e.message}`,'error'); }
     finally { setDetailLoading(false); }
@@ -114,7 +114,7 @@ export default function App() {
     catch(e) { notify(e.message,'error'); return; }
     setBusy(`flow-${flowId}`);
     try {
-      const saved = await api.updateFlow({...flow,id:flowId,offers:next});
+      const saved = await api.updateFlow(flowId,next);
       // The backend decides what is pending sync, so take its flags instead of keeping stale local copies.
       const savedById = new Map((Array.isArray(saved?.offers) ? saved.offers : []).map(o => [String(o.offer_id), o]));
       next = next.map(item => {
@@ -136,13 +136,13 @@ export default function App() {
   const sync = async (direction) => {
     setBusy(direction);
     try {
-      const result=direction==='fetch'?await api.syncFromKeitaro():await api.syncToKeitaro();
-      const errorCount=(result?.errors||[]).length;
-      const conflictCount=(result?.conflicts||[]).reduce((n,c)=>n+(c.offer_ids?.length||0),0);
-      const pendingCount=(result?.flows_still_pending||[]).length;
+      const result = direction === 'fetch'
+        ? await api.syncFromKeitaro()
+        : await api.syncCampaign(getKeitaroId(selected));
+      const errorCount = (result?.errors || []).length;
+      const pendingCount = (result?.flows_still_pending || []).length;
       if (errorCount) notify(`Синхронизация завершилась с ошибками (${errorCount}). Часть данных не обновлена.`,'error');
-      else if (conflictCount) notify(`Получено из Keitaro. Офферов с несохранёнными правками пропущено: ${conflictCount}. Сначала нажмите Sync to Keitaro.`,'error');
-      else if (pendingCount) notify(`Часть правок появилась во время отправки и ждёт следующей синхронизации (потоков: ${pendingCount}).`,'error');
+      else if (pendingCount) notify(`Часть правок осталась несинхронизированной (потоков: ${pendingCount}).`,'error');
       else notify(result?.message || (direction==='fetch'?'Данные получены из Keitaro':'Изменения отправлены в Keitaro'));
       if(selected) await openCompany(selected);
       await loadOffers();
@@ -170,19 +170,19 @@ export default function App() {
       </section> : <section className="content detail-content">
         <button className="back-link" onClick={back}><ArrowLeft size={16}/> Все компании</button>
         <div className="page-heading detail-heading"><div><div className="eyebrow">COMPANY / DETAILS</div><h1>{getName(detail || selected)}</h1><p>Настройка потоков и управление офферами компании.</p></div><div className="sync-actions"><button className="secondary-btn" disabled={!!busy} onClick={()=>sync('fetch')}>{busy==='fetch'?<LoaderCircle className="spin" size={16}/>:<ArrowDownToLine size={16}/>} Fetch from Keitaro</button><button className="primary-btn" disabled={!!busy} onClick={()=>sync('sync')}>{busy==='sync'?<LoaderCircle className="spin" size={16}/>:<ArrowUpFromLine size={16}/>} Sync to Keitaro</button></div></div>
-        <div className="company-summary"><div className="summary-icon"><Building2 size={22}/></div><div className="summary-main"><small>COMPANY</small><b>{getName(detail || selected)}</b><span className="muted">ID: {fmt(getId(detail || selected))}</span></div><div className="summary-divider"></div><div className="summary-meta"><small>GEO CODE</small><b><Globe2 size={14}/>{getGeo(detail || selected)}</b></div><div className="summary-divider"></div><div className="summary-meta"><small>FLOWS</small><b><Layers3 size={14}/>{detailLoading?'…':flows.length}</b></div></div>
+        <div className="company-summary"><div className="summary-icon"><Building2 size={22}/></div><div className="summary-main"><small>COMPANY</small><b>{getName(detail || selected)}</b><span className="muted">ID: {fmt(detail?.keitaro_id ?? getKeitaroId(selected))}</span></div><div className="summary-divider"></div><div className="summary-meta"><small>GEO CODE</small><b><Globe2 size={14}/>{getGeo(detail || selected)}</b></div><div className="summary-divider"></div><div className="summary-meta"><small>FLOWS</small><b><Layers3 size={14}/>{detailLoading?'…':flows.length}</b></div></div>
         <div className="section-head flows-head"><div><h2>Company flows</h2><p>Потоки компании и назначенные на них офферы</p></div><span className="count-chip">{flows.length} flows</span></div>
         {detailLoading?<div className="empty"><LoaderCircle className="spin" size={22}/>Загружаем потоки...</div>:flows.length===0?<div className="empty panel-empty"><Layers3 size={25}/><b>Потоки не найдены</b><span>Для этой компании пока нет потоков.</span></div>:<div className="flows-list">{flows.map((flow,index)=>{
-          const current=getCurrentOffers(flow), flowId=flow.id ?? flow.stream_id ?? index;
+          const current=getCurrentOffers(flow), flowId=flow.id ?? flow.stream_id ?? index, keitaroFlowId=flow.keitaro_id ?? flow.stream_id ?? flowId;
           const boundIds=current.map(getOfferId).filter(x=>x!=null).map(String);
           const available=offers.filter(o=>!boundIds.includes(String(getId(o)))&&!boundIds.includes(String(o.keitaro_id)));
           const hideBody = isGeoFlow(flow);
           return <article className="flow-card" key={flowId}>
-            <div className="flow-top" onClick={()=>setExpanded(p=>({...p,[flowId]:!p[flowId]}))}><div className="flow-type-icon"><Layers3 size={18}/></div><div className="flow-title"><div><b>{flow.name || `Flow ${flowId}`}</b><span className="flow-id">ID #{flowId}</span></div><small>{flow.type || flow.schema || 'Regular flow'} · {flow.state || 'Active'}</small></div><div className="flow-offer-count">{current.length} {current.length===1?'offer':'offers'}</div><button className="expand-btn" aria-label="Toggle flow"><ChevronDown className={expanded[flowId]===false?'collapsed':''} size={18}/></button></div>
+            <div className="flow-top" onClick={()=>setExpanded(p=>({...p,[flowId]:!p[flowId]}))}><div className="flow-type-icon"><Layers3 size={18}/></div><div className="flow-title"><div><b>{flow.name || `Flow ${flowId}`}</b><span className="flow-id">ID #{keitaroFlowId}</span></div><small>{flow.type || flow.schema || 'Regular flow'} · {flow.state || 'Active'}</small></div><div className="flow-offer-count">{current.length} {current.length===1?'offer':'offers'}</div><button className="expand-btn" aria-label="Toggle flow"><ChevronDown className={expanded[flowId]===false?'collapsed':''} size={18}/></button></div>
             {expanded[flowId]!==false&&hideBody==false&&<div className="flow-body">
               {current.length===0?<div className="no-offers"><div className="no-offer-icon"><Database size={16}/></div><div><b>Офферы не назначены</b><span>Этот поток пока не содержит офферов.</span></div></div>:<div className="offer-list">{current.map((o,i)=>{const id=getOfferId(o);const remote=remoteOffer(id);const deleted=isDeletedOffer(o);return <div className={`offer-row ${deleted?'offer-row-deleted':''}`} key={`${id}-${i}`}><div className="offer-symbol">O</div><div className="offer-info"><b>{getOfferName({...remote,...o})}</b><small>Keitaro ID: {fmt(id)}{deleted?' · Удалён':''}</small></div><div className="share-editor"><input aria-label="Share percentage" type="number" min="0" max="100" step="1" defaultValue={o.share ?? 0} disabled={deleted || busy===`flow-${flowId}`} onBlur={e=>{const value=Number(e.target.value);if(Number.isInteger(value)&&value>=0&&value<=100&&value!==Number(o.share))changeFlowOffer(flow,id,'share',value);else e.target.value=String(o.share ?? 0);}}/><span>%</span></div>{!deleted&&<button className={`pin-btn ${o.pinned?'pinned':''}`} title={o.pinned?'Открепить Share':'Закрепить Share'} disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,o.pinned?'unpin':'pin')}>{o.pinned?<Pin size={14}/>:<PinOff size={14}/>}</button>}<span className={`sync-tag ${o.synced===false?'unsynced':''}`}>{o.synced===false?'Pending sync':'Linked'}</span>{deleted?<button className="restore-btn" title="Восстановить оффер" disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,'restore')}><RefreshCw size={14}/> Restore</button>:<button className="remove-btn" title="Пометить оффер удалённым" disabled={busy===`flow-${flowId}`} onClick={()=>changeFlowOffer(flow,id,'delete')}><Trash2 size={15}/></button>}</div>})}</div>}
               <div className="flow-controls"><div className="add-offer"><select value="" disabled={busy===`flow-${flowId}`} onChange={e=>e.target.value&&changeFlowOffer(flow,e.target.value,'add')}><option value="">+ Добавить оффер из Keitaro</option>{available.map(o=><option key={getId(o)} value={getId(o)}>{getOfferName(o)} · #{getId(o)}</option>)}</select><ChevronDown size={14}/></div>{busy===`flow-${flowId}`&&<span className="saving-indicator"><LoaderCircle className="spin" size={14}/> Сохранение…</span>}</div>
-              <div className="flow-foot"><span>Stream ID: {flowId}</span><span>Изменения сохраняются автоматически</span></div>
+              <div className="flow-foot"><span>Keitaro Stream ID: {keitaroFlowId}</span><span>Изменения сохраняются автоматически</span></div>
             </div>}
           </article>
         })}</div>}
@@ -192,4 +192,4 @@ export default function App() {
     {modal&&<Modal onClose={()=>setModal(false)}><div className="modal-head"><div><div className="eyebrow">NEW WORKSPACE</div><h2>Создать компанию</h2><p>Укажите название, GEO и офферы для новой компании.</p></div><button className="icon-btn" onClick={()=>setModal(false)}><X size={18}/></button></div><form onSubmit={create}><label>Название компании<input required autoFocus placeholder="Например, test_company_eu" value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))}/></label><label>GEO код<input required maxLength="3" placeholder="DE" value={draft.geo} onChange={e=>setDraft(d=>({...d,geo:e.target.value.toUpperCase()}))}/><small>Двухбуквенный код страны, например DE, US, FR</small></label><label>Офферы <span className="optional">необязательно</span></label><div className="offer-picker"><div className="picker-search"><Search size={15}/><input placeholder="Найти оффер..." value={offerSearch} onChange={e=>setOfferSearch(e.target.value)}/></div><div className="picker-options">{offers.filter(o=>`${getOfferName(o)} ${getId(o)}`.toLowerCase().includes(offerSearch.toLowerCase())).map(o=><label className="picker-option" key={getId(o)}><input type="checkbox" checked={draft.offerIds.includes(getId(o))} onChange={()=>toggleDraftOffer(getId(o))}/><span><b>{getOfferName(o)}</b><small>ID: {getId(o)}</small></span></label>)}{offers.length===0&&<div className="picker-empty">Офферы не загружены</div>}</div></div>{draft.offerIds.length>0&&<div className="selected-count">{draft.offerIds.length} оффер(ов) выбрано</div>}<div className="modal-actions"><button type="button" className="secondary-btn" onClick={()=>setModal(false)}>Отмена</button><button className="primary-btn" disabled={busy==='create'}>{busy==='create'?<LoaderCircle className="spin" size={16}/>:<Plus size={16}/>} Создать компанию</button></div></form></Modal>}
     <Toast toast={toast} onClose={()=>setToast(null)}/>
   </div>;
-}
+}
