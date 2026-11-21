@@ -1,9 +1,11 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.schemas.campaign import CampaignCreatePayload
 
 if TYPE_CHECKING:
-    from app.integrations.keitaro import KeitaroGateway
+    from app.integrations.keitaro_gateway import KeitaroGateway
+    from app.schemas.campaign import OfferPayload
+    from app.schemas.flow import FlowCreate
 
 
 class KeitaroCampaignGateway:
@@ -52,20 +54,6 @@ class KeitaroCampaignGateway:
         """
         return await self.gateway.post("/campaigns", data.model_dump(exclude_none=True))
 
-    async def delete_campaign(self, campaign_id: int) -> None:
-        """Delete a campaign from Keitaro by numeric ID.
-
-        Sends DELETE request to soft-delete or remove the specified campaign.
-        Expected to return HTTP 204 No Content on success.
-
-        Args:
-            campaign_id: Numeric ID of the campaign to delete.
-
-        Returns:
-            None after successful deletion.
-        """
-        await self.gateway.delete(f"/campaigns/{campaign_id}")
-
     async def get_by_id(self, campaign_id: int) -> dict:
         """Fetch a single campaign's details from Keitaro by ID.
 
@@ -82,3 +70,56 @@ class KeitaroCampaignGateway:
             Original code had incorrect return type annotation; this fixes it.
         """
         return await self.gateway.get(f"/campaigns/{campaign_id}")
+
+    async def create_flow(self, data: "FlowCreate") -> dict:
+        """Create a new flow/stream for a campaign.
+
+        Sends flow configuration (type, position, schema/action, country, etc.)
+        to Keitaro and returns the created flow details. Payload is serialized
+        with aliases preserved and None values excluded.
+
+        Args:
+            data: FlowCreate schema with complete flow configuration.
+
+        Returns:
+            Dictionary containing created flow metadata from Keitaro.
+        """
+        return await self.gateway.post(
+            "/streams", data.model_dump(exclude_none=True, by_alias=True)
+        )
+
+    async def get_campaign_flows(self, campaign_id: int) -> Any:
+        """Retrieve all flows/streams for a specific campaign.
+
+        Fetches GEO and OFFER flows associated with a campaign from Keitaro.
+        Response includes flow IDs, types, positions, and current offer bindings.
+
+        Args:
+            campaign_id: Numeric ID of the campaign whose flows to retrieve.
+
+        Returns:
+            List of flow dictionaries or raw response data.
+        """
+        return await self.gateway.get(f"/campaigns/{campaign_id}/streams")
+
+    async def update_flow_offers(self, flow_id: int, offers: list["OfferPayload"]) -> Any:
+        """Update offer bindings for an existing flow without changing other settings.
+
+        Sends only the offers field to Keitaro's PUT endpoint, preserving all
+        other flow configuration (filters, rules, schema, actions). Useful for
+        synchronizing FlowOffer entities without affecting upstream stream logic.
+
+        Args:
+            flow_id: Numeric ID of the flow whose offers to update.
+            offers: List of OfferPayload with offer_id, share (0-100), and state.
+
+        Returns:
+            Updated flow data or raw response from Keitaro.
+        """
+        return await self.gateway.put(
+            f"/streams/{flow_id}", {"offers": [offer.model_dump() for offer in offers]}
+        )
+
+    async def get_offer_details(self, offer_id: int) -> Any:
+        """Retrieve an offer from Keitaro to resolve its display name during sync."""
+        return await self.gateway.get(f"/offers/{offer_id}")

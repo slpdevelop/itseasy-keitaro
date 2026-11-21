@@ -2,12 +2,14 @@
 
 from collections.abc import Collection
 from datetime import datetime
+from typing import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Offer
 from app.schemas.offer import RemoteOffer
+from sqlalchemy.sql.selectable import Select
 
 
 class OfferRepository:
@@ -34,11 +36,12 @@ class OfferRepository:
         self._session = session
 
     async def get_map_by_keitaro_ids(self, keitaro_ids: Collection[int]) -> dict[int, Offer]:
+
         ids = set(keitaro_ids)
         if not ids:
             return {}
-        stmt = select(Offer).where(Offer.keitaro_id.in_(ids))
-        offers = (await self._session.scalars(stmt)).all()
+        query: Select[tuple[Offer]] = select(Offer).where(Offer.keitaro_id.in_(ids))
+        offers: Sequence[tuple[Offer]] = (await self._session.scalars(query)).all()
         return {o.keitaro_id: o for o in offers}
 
     async def get_all(self, *, include_deleted: bool = False) -> list[Offer]:

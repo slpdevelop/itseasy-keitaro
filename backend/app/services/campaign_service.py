@@ -19,9 +19,9 @@ from app.core.exceptions import (
     InvalidRequestError,
     KeitaroError,
 )
-from app.integrations.campaign_gateway import KeitaroCampaignGateway
+from app.integrations.keitaro_api import KeitaroCampaignGateway
 from app.integrations.flow_gateway import KeitaroFlowGateway
-from app.integrations.keitaro import KeitaroGateway
+from app.integrations.keitaro_gateway import KeitaroGateway
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
 from app.repositories.campaign_repository import CampaignRepository
 from app.repositories.flow_repository import FlowRepository

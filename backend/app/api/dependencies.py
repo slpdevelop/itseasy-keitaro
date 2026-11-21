@@ -4,7 +4,7 @@ import httpx
 from fastapi import Depends, Request
 
 from app.core.config import Settings, get_settings
-from app.integrations.keitaro import KeitaroGateway
+from app.integrations.keitaro_gateway import KeitaroGateway
 from app.integrations.flow_gateway import KeitaroFlowGateway
 from app.services.campaign_service import CampaignService
 from app.services.flow_service import FlowService

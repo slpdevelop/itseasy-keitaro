@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.models import Flow
+from sqlalchemy.sql.selectable import Select
 
 
 class FlowRepository:
@@ -24,10 +25,10 @@ class FlowRepository:
         Returns:
             Flows with ``offers`` eagerly loaded.
         """
-        stmt = (
+        query: Select[tuple[Flow]] = (
             select(Flow).where(Flow.campaign_id == campaign_id).options(selectinload(Flow.offers))
         )
-        return list((await self._session.scalars(stmt)).all())
+        return list((await self._session.scalars(query)).all())
 
     def add(self, flow: Flow) -> None:
         """Add a flow entity to the current session for persistence.

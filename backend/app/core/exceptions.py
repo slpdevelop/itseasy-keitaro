@@ -52,18 +52,6 @@ class ConfigurationError(AppError):
         super().__init__(message or "; ".join(self.errors) or self.public_message)
 
 
-class DatabaseConnectionError(AppError):
-    """Raised when PostgreSQL connection cannot be established.
-
-    Occurs during app startup if database URL is invalid, credentials are wrong,
-    or the server is unreachable. Indicates infrastructure issue preventing
-    local data storage operations.
-    """
-
-    code = "DATABASE_CONNECTION_ERROR"
-    public_message = "Database connection failed"
-
-
 class InvalidRequestError(AppError):
     """Raised when request payload cannot be processed for upstream API.
 
@@ -136,18 +124,6 @@ class CampaignNotFoundError(AppError):
     status_code = 404
     code = "CAMPAIGN_NOT_FOUND"
     public_message = "Campaign not found"
-
-
-class OfferNotFoundError(AppError):
-    """Raised when offer with given Keitaro ID does not exist.
-
-    Occurs when importing or validating an offer that has been deleted
-    from Keitaro or never existed. Use the numeric Keitaro offer ID.
-    """
-
-    status_code = 404
-    code: str = "OFFER_NOT_FOUND"
-    public_message = "Offer not found"
 
 
 async def app_exception_handler(request: Request, exc: AppError) -> JSONResponse:
