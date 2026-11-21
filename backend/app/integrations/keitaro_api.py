@@ -123,3 +123,14 @@ class KeitaroAPI:
     async def get_offer_details(self, offer_id: int) -> Any:
         """Retrieve an offer from Keitaro to resolve its display name during sync."""
         return await self.gateway.get(f"/offers/{offer_id}")
+
+    async def get_keitaro_offers(self) -> Any:
+        """Fetch complete offer catalog from Keitaro API.
+
+        Retrieves all active offers available in Keitaro system for potential
+        import into local database or display in UI offer selection interfaces.
+
+        Returns:
+            Raw response from Keitaro /offers endpoint (structure varies by API version).
+        """
+        return await self.gateway.get("/offers")

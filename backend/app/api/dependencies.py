@@ -3,18 +3,14 @@ from typing import Annotated
 import httpx
 from fastapi import Depends, Request
 
+from app.integrations.keitaro_api import KeitaroAPI
 from app.core.config import Settings, get_settings
 from app.integrations.keitaro_gateway import KeitaroGateway
 from app.services.campaign_service import CampaignService
-from app.services.offer_service import OfferService
 
 
-def get_keitaro_gateway(request: Request) -> KeitaroGateway:
-    """Provide shared Keitaro HTTP client gateway for all requests.
-
-    Retrieves the singleton httpx.AsyncClient from app.state and wraps it with
-    KeitaroGateway to handle API authentication, timeouts, and error responses.
-    Do not create separate clients in services or endpoints - use this dependency.
+def get_keitaro_api(request: Request) -> KeitaroAPI:
+    """Provide shared Keitaro API .
 
     Args:
         request: FastAPI request object containing app state.
@@ -23,14 +19,15 @@ def get_keitaro_gateway(request: Request) -> KeitaroGateway:
         Configured KeitaroGateway instance with the shared HTTP client.
     """
     client: httpx.AsyncClient = request.app.state.http_client
-    return KeitaroGateway(client)
+    gateway = KeitaroGateway(client)
+    return KeitaroAPI(gateway)
 
 
-KeitaroDep = Annotated[KeitaroGateway, Depends(get_keitaro_gateway)]
+KeitaroAPIDep = Annotated[KeitaroAPI, Depends(get_keitaro_api)]
 
 
 def get_campaign_service(
-    gateway: KeitaroDep, settings: Annotated[Settings, Depends(get_settings)], request: Request
+    api: KeitaroAPIDep, settings: Annotated[Settings, Depends(get_settings)], request: Request
 ) -> CampaignService:
     """Create and inject CampaignService with all required dependencies.
 
@@ -49,18 +46,10 @@ def get_campaign_service(
     """
 
     return CampaignService(
-        gateway=gateway,
+        api=api,
         settings=settings,
         db_session=request.app.state.session_factory,
     )
 
 
 CampaignServiceDep = Annotated[CampaignService, Depends(get_campaign_service)]
-
-
-def get_offer_service(gateway: KeitaroDep, request: Request) -> OfferService:
-    """Build an offer service using the application's shared session factory."""
-    return OfferService(gateway=gateway, db_session=request.app.state.session_factory)
-
-
-OfferServiceDep = Annotated[OfferService, Depends(get_offer_service)]

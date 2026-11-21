@@ -135,11 +135,11 @@ class CampaignService:
 
     def __init__(
         self,
-        gateway: "KeitaroGateway",
+        api: "KeitaroAPI",
         settings: "Settings",
         db_session: "async_sessionmaker[AsyncSession]",
     ) -> None:
-        self.gateway: KeitaroGateway = gateway
+        self.api: KeitaroGateway = api
         self.settings: Settings = settings
         self.db_session: "async_sessionmaker[AsyncSession]" = db_session
 
@@ -153,7 +153,7 @@ class CampaignService:
         Returns:
             List of campaign dictionaries with names starting from configured prefix.
         """
-        campaigns: list[dict] = await KeitaroAPI(self.gateway).get_campaigns()
+        campaigns: list[dict] = await self.api.get_campaigns()
         return [
             campaign
             for campaign in campaigns
@@ -256,8 +256,8 @@ class CampaignService:
             KeitaroError: If the response does not match the expected structure.
         """
         raw_campaign, raw_flows = await asyncio.gather(
-            KeitaroAPI(self.gateway).get_campaign_by_id(keitaro_id),
-            KeitaroAPI(self.gateway).get_campaign_flows(keitaro_id),
+            self.api.get_campaign_by_id(keitaro_id),
+            self.api.get_campaign_flows(keitaro_id),
         )
         try:
             remote_campaign = RemoteCampaign.model_validate(raw_campaign)
@@ -297,7 +297,7 @@ class CampaignService:
         async def _get_offer(offer_id: int) -> RemoteOffer:
             async with sem:
                 try:
-                    raw_offer = await KeitaroAPI(self.gateway).get_offer_details(offer_id)
+                    raw_offer = await self.api.get_offer_details(offer_id)
                     return RemoteOffer.model_validate(raw_offer)
                 except Exception:
                     logger.exception(
@@ -514,7 +514,7 @@ class CampaignService:
             traffic_source_id=self.settings.campaign_traffic_source_id,
             state="active",
         )
-        response = await KeitaroAPI(self.gateway).create_campaign(payload)
+        response = await self.api.create_campaign(payload)
         campaign_id = response.get("id") if isinstance(response, dict) else None
         if not isinstance(campaign_id, int) or campaign_id <= 0:
             raise CampaignCreationError("Keitaro did not return a valid campaign id")
@@ -542,7 +542,7 @@ class CampaignService:
             schema="redirect",
             filters=[FlowFilter(name="country", mode="accept", payload=[geo_code])],
         )
-        return await KeitaroAPI(self.gateway).create_flow(geo_flow_data)
+        return await self.api.create_flow(geo_flow_data)
 
     async def _create_offer_flow(self, campaign_id: int, offer_id_list: list[int]) -> dict:
         """Create OFFER flow with specified offer bindings within campaign.
@@ -574,7 +574,7 @@ class CampaignService:
             schema="landings",
             offers=offers,
         )
-        return await KeitaroAPI(self.gateway).create_flow(offer_flow_data)
+        return await self.api.create_flow(offer_flow_data)
 
     async def _save_campaign_to_db(
         self,
@@ -659,7 +659,7 @@ class CampaignService:
         for item in pending:
             # 2. Network phase
             try:
-                await KeitaroAPI(self.gateway).update_flow_offers(item.keitaro_id, item.offers)
+                await self.api.update_flow_offers(item.keitaro_id, item.offers)
             except Exception as exc:
                 logger.exception("Keitaro push failed for flow %s", item.keitaro_id)
                 result.add_error(item.keitaro_id, SyncErrorStage.PUSH, exc)
@@ -730,3 +730,18 @@ class CampaignService:
                 for link in flow.offers
             ],
         }
+
+    async def get_local_offers(self, *, include_deleted: bool = False):
+        """Retrieve all local offer records (optionally including soft-deleted).
+
+        Fetches offers from repository for UI listing or operations that require
+        full local state. Filters out deleted records unless explicitly requested.
+
+        Args:
+            include_deleted: If True, return offers with deleted=True flag set.
+
+        Returns:
+            List of Offer entities ordered by name. Empty if none found.
+        """
+        async with self.db_session() as session:
+            return await OfferRepository(session).get_all(include_deleted=include_deleted)
