@@ -67,19 +67,6 @@ class CampaignOffersUpdateResponse(Base):
     total: int
 
 
-class OfferCreateRequest(BaseModel):
-    """Request to import an existing Keitaro offer into local storage.
-
-    Contains only the external Keitaro offer ID needed to fetch full details.
-    Does not create offers in Keitaro—only stores references for binding operations.
-
-    Attributes:
-        keitaro_id: External numeric ID of the offer to import locally.
-    """
-
-    keitaro_id: int = Field(gt=0)
-
-
 class LocalOfferResponse(Base):
     """Detailed local offer record from database with tracking metadata.
 
@@ -112,29 +99,6 @@ class LocalOfferListResponse(Base):
 
     items: list[LocalOfferResponse]
     total: int
-
-
-class OfferDeleteResponse(Base):
-    """Response confirming local offer soft-deletion.
-
-    Indicates the offer record is marked as deleted locally but remains in database.
-    Used by DELETE /api/v1/offers/{offer_id} endpoint.
-    """
-
-    id: UUID
-    deleted: bool
-
-
-class OfferRestoreResponse(Base):
-    """Response confirming restoration of a soft-deleted offer.
-
-    Indicates the offer is restored to active state with synced flag reset.
-    Used by PATCH /api/v1/offers/{offer_id}/restore endpoint.
-    """
-
-    id: UUID
-    deleted: bool
-    synced: bool
 
 
 class RemoteOffer(BaseModel):

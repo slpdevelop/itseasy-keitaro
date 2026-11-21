@@ -1,12 +1,9 @@
 """Business logic for offers from Keitaro and the local database."""
 
-from uuid import UUID
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.exceptions import InvalidRequestError, OfferNotFoundError
-from app.models.models import Offer
 from app.repositories.offer_repository import OfferRepository
 
 
@@ -47,20 +44,6 @@ class OfferService:
         """
         return await self.gateway.get("/offers")
 
-    async def get_keitaro_offer(self, keitaro_id: int) -> Any:
-        """Fetch single offer details from Keitaro by numeric ID.
-
-        Retrieves complete information for a specific offer to validate during
-        import operations or when displaying offer details in UI.
-
-        Args:
-            keitaro_id: External numeric ID assigned by Keitaro.
-
-        Returns:
-            Dictionary containing offer data from Keitaro API response.
-        """
-        return await self.gateway.get(f"/offers/{keitaro_id}")
-
     async def get_local_offers(self, *, include_deleted: bool = False):
         """Retrieve all local offer records (optionally including soft-deleted).
 
@@ -75,93 +58,3 @@ class OfferService:
         """
         async with self.db_session() as session:
             return await OfferRepository(session).get_all(include_deleted=include_deleted)
-
-    async def add_offer(self, keitaro_id: int):
-        """Import a Keitaro offer into local database and mark as synced.
-
-        Fetches full offer data from Keitaro by ID, validates name matches, then
-        either returns existing local record (or restored from deleted state) or
-        creates new Offer entity with stripped whitespace name. Does not sync back
-        to Keitaro—only establishes local reference for binding operations.
-
-        Args:
-            keitaro_id: External numeric ID of offer to import locally.
-
-        Returns:
-            Local Offer entity created or restored. Synced=True automatically set.
-
-        Raises:
-            InvalidRequestError: If Keitaro returns invalid format or mismatching ID.
-            OfferNotFoundError: If existing offer deleted and cannot be restored.
-        """
-        data = await self.get_keitaro_offer(keitaro_id)
-        if not isinstance(data, dict):
-            raise InvalidRequestError("Keitaro returned invalid offer information")
-
-        returned_id = data.get("id")
-        name = data.get("name")
-
-        if not isinstance(returned_id, int) or returned_id != keitaro_id:
-            raise InvalidRequestError("Keitaro returned an offer with a mismatched ID")
-        if not isinstance(name, str) or not name.strip():
-            raise InvalidRequestError("Keitaro returned an offer without a valid name")
-
-        async with self.db_session() as session, session.begin():
-            repository = OfferRepository(session)
-            existing = await repository.get_by_keitaro_id(keitaro_id)
-            if existing is not None:
-                if existing.deleted:
-                    restored = await repository.set_deleted(
-                        existing.id, deleted=False, synced=True
-                    )
-                    if restored is None:
-                        raise OfferNotFoundError()
-                    return restored
-                return existing
-            return await repository.create(
-                keitaro_id=keitaro_id, name=name.strip(), synced=True
-            )
-
-    async def delete_offer(self, offer_id: UUID) -> Offer:
-        """Soft-delete a local offer record (logical removal).
-
-        Marks offer as deleted in database without removing from storage. Underlying
-        Keitaro offer remains unchanged. Offers can be restored via restore method.
-        Deleted offers cannot participate in new flow bindings unless restored first.
-
-        Args:
-            offer_id: Local UUID of offer to delete.
-
-        Returns:
-            Updated Offer entity with deleted=True flag set.
-
-        Raises:
-            OfferNotFoundError: If offer not found in database.
-        """
-        async with self.db_session() as session, session.begin():
-            offer = await OfferRepository(session).set_deleted(offer_id, deleted=True)
-            if offer is None:
-                raise OfferNotFoundError()
-            return offer
-
-    async def restore_offer(self, offer_id: UUID) -> Offer:
-        """Restore a soft-deleted offer to active state.
-
-        Sets deleted=False flag on local record and resets synced=False since
-        the restored offer's current state must be re-validated against Keitaro
-        before being pushed back to upstream system.
-
-        Args:
-            offer_id: Local UUID of deleted offer to restore.
-
-        Returns:
-            Restored Offer entity with deleted=False, synced=False.
-
-        Raises:
-            OfferNotFoundError: If offer not found in database.
-        """
-        async with self.db_session() as session, session.begin():
-            offer = await OfferRepository(session).set_deleted(offer_id, deleted=False)
-            if offer is None:
-                raise OfferNotFoundError()
-            return offer
