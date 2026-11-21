@@ -3,7 +3,6 @@ from typing import Any
 from app.api.dependencies import KeitaroFlowGateway
 from app.core.exceptions import InvalidRequestError
 from app.repositories.campaign_repository import CampaignRepository
-from app.schemas.flow import FlowFilter, FlowCreate, FlowOffer
 
 
 class FlowService:
@@ -26,64 +25,6 @@ class FlowService:
     def __init__(self, gateway: KeitaroFlowGateway, repository: CampaignRepository):
         self.gateway: KeitaroFlowGateway = gateway
         self.repository = repository
-
-    async def create_geo_flow(self, campaign_id: int, geo_code: str) -> dict:
-        """Create GEO flow for geographic targeting with Google redirect.
-
-        Builds FlowCreate payload with country filter pointing to Google search.
-        Returns created flow details from Keitaro API for use in checkpoint and DB save.
-
-        Args:
-            campaign_id: Parent campaign numeric ID in Keitaro.
-            geo_code: ISO 2-letter country code for targeting (e.g., "US", "RU").
-
-        Returns:
-            Dictionary containing created GEO flow data from Keitaro response.
-        """
-        geo_code = geo_code.strip().upper()
-        geo_flow_data = FlowCreate(
-            campaign_id=campaign_id,
-            name=f"Geo {geo_code} -> Google",
-            action_payload="https://google.com",
-            schema="redirect",
-            filters=[FlowFilter(name="country", mode="accept", payload=[geo_code])],
-        )
-        return await self.gateway.create_flow(geo_flow_data)
-
-    async def create_offer_flow(self, campaign_id: int, offer_ids: list[int]) -> dict:
-        """Create OFFER flow with equal traffic share across specified offers.
-
-        Validates that at least one offer is provided, calculates 100/num_offers
-        as share percentage, builds FlowCreate with offers array, and returns created flow.
-
-        Args:
-            campaign_id: Parent campaign numeric ID in Keitaro.
-            offer_ids: List of Keitaro offer IDs to bind (min 1 required).
-
-        Returns:
-            Dictionary containing created OFFER flow data from Keitaro response.
-
-        Raises:
-            InvalidRequestError: If empty offer list provided.
-        """
-        if not offer_ids:
-            raise InvalidRequestError("At least one offer is required to create an offer stream")
-        base, remainder = divmod(100, len(offer_ids))
-        remainder_start = len(offer_ids) - remainder
-        offers = [
-            FlowOffer(
-                offer_id=offer_id,
-                share=base + (1 if index >= remainder_start else 0),
-            )
-            for index, offer_id in enumerate(offer_ids)
-        ]
-        offer_flow_data = FlowCreate(
-            campaign_id=campaign_id,
-            name="Offers",
-            schema="landings",
-            offers=offers,
-        )
-        return await self.gateway.create_flow(offer_flow_data)
 
     async def update_flow_offers(self, flow_id, offers: list[dict[str, Any]]) -> dict[str, Any]:
         """Update local offer bindings for a flow and return normalized state."""
@@ -120,95 +61,6 @@ class FlowService:
                 for link in flow.offers
             ],
         }
-
-    async def sync_from_keitaro(self) -> dict[str, Any]:
-        """Pull offer bindings for tracked campaigns from Keitaro API.
-
-        Iterates over locally tracked campaigns and their flows, fetches current
-        offer collections from Keitaro, validates incoming data format, then
-        replaces local FlowOffer entities with authoritative remote values.
-        Creates Offer stubs for offers not yet imported.
-
-        Local edits that were not pushed yet (``synced=False``) are never overwritten.
-        They are skipped and reported in ``conflicts`` so the user can push them first.
-
-        Returns statistics: campaigns_checked, flows_synced count, errors list,
-        conflicts list, success flag.
-
-        Args:
-            None (uses locally tracked campaigns from repository)
-
-        Returns:
-            Dictionary with sync progress and error tracking.
-        """
-        campaigns = await self.repository.get_local_campaign_streams()
-        result: dict[str, Any] = {
-            "campaigns_checked": len(campaigns),
-            "flows_synced": 0,
-            "errors": [],
-            "conflicts": [],
-        }
-
-        # Cache names for this synchronization run so the same offer used in
-        # several flows is requested from Keitaro only once.
-        offer_names: dict[int, str] = {}
-
-        for campaign in campaigns:
-            campaign_id = campaign["keitaro_id"]
-            try:
-                remote_flows = self._extract_flows(
-                    await self.gateway.get_campaign_flows(campaign_id)
-                )
-            except Exception as exc:
-                result["errors"].append({"campaign_id": campaign_id, "error": type(exc).__name__})
-                continue
-
-            local_flow_ids = {flow["keitaro_id"] for flow in campaign["flows"]}
-            for remote_flow in remote_flows:
-                flow_id = remote_flow.get("id")
-                if flow_id not in local_flow_ids or "offers" not in remote_flow:
-                    continue
-                try:
-                    items = self._validate_remote_offers(remote_flow["offers"])
-
-                    # Pull sync can encounter offers that were never imported locally,
-                    # or placeholder records created by an earlier sync. Resolve their
-                    # real display names from Keitaro instead of persisting "Offer 123".
-                    for offer_id in {item["offer_id"] for item in items}:
-                        if offer_id in offer_names:
-                            continue
-                        try:
-                            details = await self.gateway.get_offer_details(offer_id)
-                        except Exception:
-                            details = None
-                        name = details.get("name") if isinstance(details, dict) else None
-                        if isinstance(name, str) and name.strip():
-                            offer_names[offer_id] = name.strip()
-
-                    flow_conflicts: list[int] = []
-                    synced = await self.repository.sync_flow_offers_from_keitaro(
-                        flow_id, items, offer_names=offer_names, conflicts=flow_conflicts
-                    )
-                    if synced:
-                        result["flows_synced"] += 1
-                    if flow_conflicts:
-                        result["conflicts"].append(
-                            {
-                                "campaign_id": campaign_id,
-                                "flow_id": flow_id,
-                                "offer_ids": sorted(set(flow_conflicts)),
-                            }
-                        )
-                except Exception as exc:
-                    result["errors"].append(
-                        {
-                            "campaign_id": campaign_id,
-                            "flow_id": flow_id,
-                            "error": type(exc).__name__,
-                        }
-                    )
-        result["success"] = not result["errors"]
-        return result
 
     async def sync_to_keitaro(self) -> dict[str, Any]:
         """Push all pending offer binding changes to Keitaro flows.
