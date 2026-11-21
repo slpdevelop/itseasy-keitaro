@@ -1,11 +1,7 @@
 import asyncio
-import json
 import logging
-import os
-import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 from pydantic import TypeAdapter, ValidationError
@@ -18,9 +14,9 @@ from app.core.exceptions import (
     FlowNotFoundError,
     InvalidRequestError,
     KeitaroError,
+    KeitaroNotFoundError,
 )
 from app.integrations.keitaro_api import KeitaroAPI
-from app.integrations.keitaro_gateway import KeitaroGateway
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
 from app.repositories.campaign_repository import CampaignRepository
 from app.repositories.flow_repository import FlowRepository
@@ -38,6 +34,7 @@ from app.schemas.campaign import (
 from app.schemas.flow import FlowCreate, FlowFilter, RemoteFlow
 from app.schemas.flow import FlowOffer as FlowOfferCreate
 from app.schemas.offer import RemoteOffer
+from app.services.checkpoint import Checkpoint
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -45,92 +42,19 @@ OFFER_FETCH_CONCURRENCY: int = 10
 REMOTE_FLOWS_ADAPTER: TypeAdapter[list[RemoteFlow]] = TypeAdapter(list[RemoteFlow])
 
 
-class Checkpoint:
-    """Checkpoint manager for multi-step async operations.
-
-    Persists completed step results to disk between requests, enabling resume
-    from the last successful step after failures or restarts. Used by
-    Service.create_campaign() to handle partial failures safely.
-
-    Storage location is fixed (not mkdtemp) so concurrent creation attempts can
-    read each other's checkpoints for idempotency protection.
-
-    Attributes:
-        path: Filepath to JSON checkpoint storage file.
-        key: Operation name (e.g., campaign name) used as prefix in data dict.
-    """
-
-    DEFAULT_PATH = Path(tempfile.gettempdir()) / "campaign_checkpoint.json"
-
-    def __init__(self, key: str, path=None):
-        self.path: Path = Path(path) if path else self.DEFAULT_PATH
-        self.key: str = key
-
-    def _read(self) -> dict:
-        """Read checkpoint data from file."""
-        return json.loads(self.path.read_text("utf-8")) if self.path.exists() else {}
-
-    def _write(self, data: dict) -> None:
-        """Atomically write checkpoint data to file using temp rename."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp: Path = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-        os.replace(tmp, self.path)
-
-    async def run(self, step: str, fn: Callable[[], Awaitable[Any]]) -> Any:
-        """Execute an asynchronous step, skipping if already completed.
-
-        Checks checkpoint for prior success; if found, returns cached result.
-        Otherwise executes the function and saves result to checkpoint before
-        returning. Exception causes immediate propagation without partial save.
-
-        Args:
-            step: Step name stored in checkpoint (unique within key).
-            fn: Async callable that performs the operation.
-
-        Returns:
-            Result of the operation or cached checkpoint value.
-
-        Raises:
-            Any exception raised by fn, logged as warning before re-raising.
-        """
-        done = self._read().get(self.key, {})
-        if step in done:
-            return done[step]
-
-        try:
-            result = await fn()
-        except Exception:
-            logger.warning("Step %r failed for %r; next request resumes from it", step, self.key)
-            raise
-
-        data: dict = self._read()
-        data.setdefault(self.key, {})[step] = result
-        self._write(data)
-        return result
-
-    def clear(self) -> None:
-        """Remove checkpoint for a key to restart operation from scratch."""
-        data: dict = self._read()
-        if data.pop(self.key, None) is not None:
-            self._write(data)
-
-
 class Service:
-    """Business logic for campaign creation and lifecycle operations.
+    """Business logic for campaigns: create, pull from Keitaro, push local changes.
 
-    Orchestrates multi-step campaign creation in Keitaro with checkpoint-based
-    recovery from partial failures, pulls campaigns from Keitaro into the local
-    database and pushes pending local offer changes back. Repositories are created
-    per transaction from the injected session factory; Keitaro is accessed only
-    through the campaign and flow gateways.
+    Campaign creation is a multi-step operation in Keitaro protected by a Checkpoint,
+    so a failed attempt can resume from the last successful step. Pull and push sync
+    keep a local copy of campaigns, flows and offer bindings in PostgreSQL. Every
+    database phase uses its own short transaction (no connection is held during
+    network calls to Keitaro).
 
     Attributes:
-        gateway: Shared KeitaroGateway for authenticated HTTP requests.
-        campaign_gateway: Gateway for Keitaro campaigns API.
-        flow_gateway: Gateway for Keitaro streams (flows) and offers API.
+        api: Keitaro API client.
         settings: Application settings with campaign defaults (prefix, IDs).
-        db_session: Session factory used to open one transaction per phase.
+        session_factory: Opens one database session per phase.
     """
 
     def __init__(
@@ -139,7 +63,7 @@ class Service:
         settings: "Settings",
         session_factory: "async_sessionmaker[AsyncSession]",
     ) -> None:
-        self.api: KeitaroGateway = api
+        self.api: KeitaroAPI = api
         self.settings: Settings = settings
         self.session_factory: "async_sessionmaker[AsyncSession]" = session_factory
 
@@ -253,12 +177,16 @@ class Service:
         """Load and validate a campaign and its flows from Keitaro.
 
         Raises:
-            KeitaroError: If the response does not match the expected structure.
+            CampaignNotFoundError: If Keitaro has no campaign with this ID.
+            KeitaroError: If Keitaro fails or the response has an unexpected structure.
         """
-        raw_campaign, raw_flows = await asyncio.gather(
-            self.api.get_campaign_by_id(keitaro_id),
-            self.api.get_campaign_flows(keitaro_id),
-        )
+        try:
+            raw_campaign, raw_flows = await asyncio.gather(
+                self.api.get_campaign_by_id(keitaro_id),
+                self.api.get_campaign_flows(keitaro_id),
+            )
+        except KeitaroNotFoundError as exc:
+            raise CampaignNotFoundError() from exc
         try:
             remote_campaign = RemoteCampaign.model_validate(raw_campaign)
             remote_flows: list[RemoteFlow] = REMOTE_FLOWS_ADAPTER.validate_python(raw_flows)
@@ -431,8 +359,9 @@ class Service:
         3. Create OFFER flow with offer bindings (save result)
         4. Save all entities to local database
 
-        If any step fails, subsequent steps are skipped and checkpoint allows
-        retry from last successful operation on next request.
+        If any step fails, the checkpoint lets an identical request resume from the
+        last successful step. The checkpoint is cleared after the last step, so the
+        same request sent again later creates a new campaign.
 
         Args:
             data: Request with name, country_code, and list of Keitaro offer IDs.
@@ -441,7 +370,11 @@ class Service:
             KTCampaignCreateResponse with campaign ID and confirmation message.
         """
         campaign_name: str = self._build_campaign_name(data.name)
-        cp = Checkpoint(key=campaign_name)
+        country_code: str = data.country_code.strip().upper()
+        # The key covers the whole request: a retry with other parameters must not
+        # reuse the flows created for the previous ones.
+        offers_key: str = ",".join(str(offer_id) for offer_id in data.offer_id_list)
+        cp = Checkpoint(key=f"{campaign_name}|{country_code}|{offers_key}")
 
         campaign_id = await cp.run(
             "create_campaign",
@@ -449,7 +382,7 @@ class Service:
         )
         geo_flow = await cp.run(
             "create_geo_flow",
-            lambda: self._create_geo_flow(campaign_id, data.country_code),
+            lambda: self._create_geo_flow(campaign_id, country_code),
         )
         offer_flow = await cp.run(
             "create_offer_flow",
@@ -458,9 +391,10 @@ class Service:
         await cp.run(
             "save_to_db",
             lambda: self._save_campaign_to_db(
-                campaign_id, campaign_name, data.country_code, geo_flow, offer_flow
+                campaign_id, campaign_name, country_code, geo_flow, offer_flow
             ),
         )
+        cp.clear()
 
         return KTCampaignCreateResponse(
             campaign_id=campaign_id,
@@ -523,9 +457,8 @@ class Service:
     async def _create_geo_flow(self, campaign_id: int, country_code: str) -> dict:
         """Create GEO flow for geographic targeting within campaign.
 
-        Delegates to FlowService.create_geo_flow() which builds FlowCreate payload
-        with country filter and returns created flow data. Result saved to checkpoint
-        for database persistence later.
+        Builds a redirect flow with an "accept" country filter and returns the
+        created flow data from Keitaro (saved to the checkpoint).
 
         Args:
             campaign_id: Parent campaign Keitaro ID.
@@ -547,8 +480,9 @@ class Service:
     async def _create_offer_flow(self, campaign_id: int, offer_id_list: list[int]) -> dict:
         """Create OFFER flow with specified offer bindings within campaign.
 
-        Delegates to FlowService.create_offer_flow() which calculates equal
-        traffic share per offer and returns created flow data. Saved to checkpoint.
+        Splits traffic equally between the offers (the remainder goes to the last
+        ones, so the shares always total 100) and returns the created flow data.
+        The request schema guarantees 1-100 unique offer IDs.
 
         Args:
             campaign_id: Parent campaign Keitaro ID.
@@ -557,8 +491,6 @@ class Service:
         Returns:
             Dictionary containing OFFER flow details from Keitaro API.
         """
-        if not offer_id_list:
-            raise InvalidRequestError("At least one offer is required to create an offer stream")
         base, remainder = divmod(100, len(offer_id_list))
         remainder_start = len(offer_id_list) - remainder
         offers = [
@@ -690,46 +622,38 @@ class Service:
 
         return result
 
-    async def update_flow_offers(self, flow_id, offers: list[dict[str, Any]]) -> dict[str, Any]:
-        """Update local offer bindings for a flow and return normalized state."""
-        if len({item.get("offer_id") for item in offers}) != len(offers):
-            raise InvalidRequestError("An offer cannot be added to the same flow more than once")
-        for item in offers:
-            if not isinstance(item.get("offer_id"), int) or item["offer_id"] <= 0:
-                raise InvalidRequestError("Invalid Keitaro offer ID")
-            state = item.get("state", "active")
-            if state not in {"active", "disabled", "deleted"}:
-                raise InvalidRequestError("Offer state must be 'active', 'disabled' or 'deleted'")
-            if state == "deleted" and not item.get("deleted", False):
-                raise InvalidRequestError("Deleted state requires deleted=true")
-        try:
-            async with self.session_factory() as session, session.begin():
-                repository = CampaignRepository(session)
-                flow = await repository.update_flow_offers(flow_id, offers)
-                if flow is not None:
-                    # Access relationships while the session is still open.
-                    _ = flow.offers
-                    for link in flow.offers:
-                        _ = link.offer
-        except ValueError as exc:
-            raise InvalidRequestError(str(exc)) from exc
-        if flow is None:
-            raise FlowNotFoundError()
-        return {
-            "success": True,
-            "flow_id": str(flow.id),
-            "offers": [
-                {
-                    "offer_id": link.offer.keitaro_id,
-                    "share": link.share,
-                    "pinned": link.pinned,
-                    "state": link.state.value,
-                    "deleted": link.deleted,
-                    "synced": link.synced,
-                }
-                for link in flow.offers
-            ],
-        }
+    async def update_flow_offers(
+        self, flow_id: UUID, offers: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Update local offer bindings of a flow and return the normalized state.
+
+        Input is validated by FlowOffersUpdateRequest; business rules (shares total
+        100%, OFFER flows only) are checked by the repository. Nothing is sent to
+        Keitaro here, see sync_campaign().
+
+        Raises:
+            FlowNotFoundError: If the flow does not exist or is soft-deleted.
+            InvalidRequestError: If the bindings break a business rule.
+        """
+        async with self.session_factory() as session, session.begin():
+            flow = await CampaignRepository(session).update_flow_offers(flow_id, offers)
+            if flow is None:
+                raise FlowNotFoundError()
+            return {
+                "success": True,
+                "flow_id": str(flow.id),
+                "offers": [
+                    {
+                        "offer_id": link.offer.keitaro_id,
+                        "share": link.share,
+                        "pinned": link.pinned,
+                        "state": link.state.value,
+                        "deleted": link.deleted,
+                        "synced": link.synced,
+                    }
+                    for link in flow.offers
+                ],
+            }
 
     async def get_local_offers(self, *, include_deleted: bool = False):
         """Retrieve all local offer records (optionally including soft-deleted).

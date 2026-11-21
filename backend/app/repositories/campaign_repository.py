@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy.sql.selectable import Select
 
-from app.core.exceptions import CampaignCreationError, FlowNotFoundError
+from app.core.exceptions import CampaignCreationError, FlowNotFoundError, InvalidRequestError
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
 from app.schemas.campaign import RemoteCampaign
 
@@ -157,6 +157,14 @@ class CampaignRepository:
         ``pinned`` is local-only metadata (it is not sent to Keitaro), so changing it
         alone does not create a pending sync. A flag is never set back to True here;
         bindings that were already pending stay pending.
+
+        Returns:
+            The updated Flow with bindings and offers loaded, or None if the flow
+            does not exist (or is soft-deleted).
+
+        Raises:
+            InvalidRequestError: If the flow is not an OFFER flow or the shares break
+                the rules (pinned total above 100%, all pinned but not 100%).
         """
         session = self._session
         # Lock the flow row so a concurrent push (mark_flow_synced) cannot
@@ -170,11 +178,11 @@ class CampaignRepository:
         if flow is None:
             return None
         if flow.type != FlowType.OFFER:
-            raise ValueError("Offers can only be changed on OFFER flows")
+            raise InvalidRequestError("Offers can only be changed on OFFER flows")
 
         offer_ids = [int(item["offer_id"]) for item in items]
         if len(offer_ids) != len(set(offer_ids)):
-            raise ValueError("Duplicate offer IDs are not allowed in one flow")
+            raise InvalidRequestError("Duplicate offer IDs are not allowed in one flow")
 
         offers = []
         if offer_ids:
@@ -220,7 +228,7 @@ class CampaignRepository:
                 current_state = link.state or FlowOfferState.ACTIVE
                 state = current_state.value
             if state not in {FlowOfferState.ACTIVE.value, FlowOfferState.DISABLED.value}:
-                raise ValueError(f"Invalid offer state: {state}")
+                raise InvalidRequestError(f"Invalid offer state: {state}")
             link.state = FlowOfferState(state)
             link.deleted = is_deleted
             link.share = 0 if link.deleted else int(item.get("share", 0))
@@ -238,10 +246,10 @@ class CampaignRepository:
         unpinned_links = [link for link in active_links if not link.pinned]
         pinned_total = sum(link.share for link in pinned_links)
         if pinned_total > 100:
-            raise ValueError("The total share of pinned offers cannot exceed 100%")
+            raise InvalidRequestError("The total share of pinned offers cannot exceed 100%")
         remaining = 100 - pinned_total
         if not unpinned_links and active_links and remaining != 0:
-            raise ValueError("All offers are pinned; their shares must total exactly 100%")
+            raise InvalidRequestError("All offers are pinned; their shares must total exactly 100%")
         if unpinned_links:
             base, remainder = divmod(remaining, len(unpinned_links))
             # Put remainder points on the last offers: 3 offers => 33, 33, 34.

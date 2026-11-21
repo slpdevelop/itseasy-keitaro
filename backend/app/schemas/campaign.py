@@ -23,15 +23,24 @@ class KTCampaignCreateRequest(BaseModel):
 
     Args:
         name: Campaign name (1-255 characters).
-        country_code: Two-letter ISO country code.
-        offer_id_list: List of existing Keitaro offer IDs to bind.
+        country_code: Two-letter country code.
+        offer_id_list: 1-100 unique Keitaro offer IDs to bind (traffic is split
+            equally; 100 is the limit because shares are whole percents).
 
     Used by POST /api/v1/campaigns to initiate a new campaign in Keitaro.
     """
 
     name: str = Field(min_length=1, max_length=255)
     country_code: str = Field(min_length=2, max_length=2, pattern=r"^[A-Za-z]{2}$")
-    offer_id_list: list[int]
+    offer_id_list: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=100)
+
+    @field_validator("offer_id_list")
+    @classmethod
+    def offer_ids_unique(cls, value: list[int]) -> list[int]:
+        """Reject duplicate offer IDs."""
+        if len(set(value)) != len(value):
+            raise ValueError("Offer IDs must be unique")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -267,7 +276,7 @@ class RemoteCampaign(BaseModel):
     traffic_source_id: int | None = None
 
 
-KeitaroFlowId = int
+KeitaroId = int
 
 
 class SyncErrorStage(StrEnum):
@@ -290,7 +299,7 @@ class SyncError(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    flow_id: KeitaroFlowId
+    flow_id: KeitaroId
     stage: SyncErrorStage
     error: str = Field(description="Exception class name")
     message: Annotated[str, StringConstraints(max_length=500)] | None = Field(
@@ -311,17 +320,17 @@ class SyncResult(BaseModel):
         errors: Per-flow error records.
     """
 
-    campaign_id: KeitaroFlowId = Field(
+    campaign_id: KeitaroId = Field(
         description="Keitaro ID of the campaign whose flows were synced"
     )
     flows_checked: Annotated[int, Field(ge=0, description="Number of flows in the sample")] = 0
     flows_synced: Annotated[int, Field(ge=0, description="Fully confirmed")] = 0
     flows_still_pending: Annotated[
-        list[KeitaroFlowId],
+        list[KeitaroId],
         Field(default_factory=list, description="Will go on the next pass"),
     ]
     flows_not_found: Annotated[
-        list[KeitaroFlowId],
+        list[KeitaroId],
         Field(default_factory=list, description="Flow deleted between selection and confirmation"),
     ]
     errors: Annotated[list[SyncError], Field(default_factory=list)]
@@ -340,7 +349,7 @@ class SyncResult(BaseModel):
 
     def add_error(
         self,
-        flow_id: KeitaroFlowId,
+        flow_id: KeitaroId,
         stage: SyncErrorStage,
         exc: BaseException,
     ) -> None:

@@ -52,7 +52,7 @@ async def sync_campaign(campaign_id: Annotated[int, Path(gt=0)], service: Servic
 async def fetch_campaign(
     campaign_id: Annotated[int, Path(gt=0)], service: ServiceDep
 ) -> CampaignDetailResponse:
-
+    """Pull a campaign with its flows and offers from Keitaro into the local database."""
     return await service.fetch_campaign(campaign_id)
 
 
@@ -64,7 +64,7 @@ async def update_campaign_stream_offers(
 ) -> dict:
     """Update local offer bindings for a campaign stream.
 
-    The operation only changes local state. Use POST /offers/sync/to-keitaro
+    The operation only changes local state. Use POST /campaigns/{campaign_id}/sync
     to push pending changes to Keitaro.
     """
     return await service.update_flow_offers(

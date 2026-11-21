@@ -1,5 +1,5 @@
 import json
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -68,10 +68,18 @@ class FlowOfferUpdate(BaseModel):
     offer_id: int = Field(gt=0)
     share: int = Field(default=0, ge=0, le=100)
     pinned: bool = False
-    state: str = "active"
+    # "deleted" is a legacy way to say deleted=true; the binding keeps its real state.
+    state: Literal["active", "disabled", "deleted"] = "active"
     deleted: bool = False
 
     model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="after")
+    def deleted_state_requires_flag(self) -> Self:
+        """The legacy state "deleted" must come together with deleted=true."""
+        if self.state == "deleted" and not self.deleted:
+            raise ValueError("Deleted state requires deleted=true")
+        return self
 
 
 class FlowOffersUpdateRequest(BaseModel):
@@ -80,6 +88,15 @@ class FlowOffersUpdateRequest(BaseModel):
     offers: list[FlowOfferUpdate]
 
     model_config = ConfigDict(extra="ignore")
+
+    @field_validator("offers")
+    @classmethod
+    def offer_ids_unique(cls, value: list[FlowOfferUpdate]) -> list[FlowOfferUpdate]:
+        """An offer can be bound to a flow only once."""
+        ids = [item.offer_id for item in value]
+        if len(set(ids)) != len(ids):
+            raise ValueError("An offer cannot be added to the same flow more than once")
+        return value
 
 
 RemoteOfferState = Literal["active", "disabled"]

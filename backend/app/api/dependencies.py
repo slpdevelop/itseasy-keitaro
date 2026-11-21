@@ -10,13 +10,13 @@ from app.services.service import Service
 
 
 def get_keitaro_api(request: Request) -> KeitaroAPI:
-    """Provide shared Keitaro API .
+    """Provide a Keitaro API client built on the shared HTTP client.
 
     Args:
         request: FastAPI request object containing app state.
 
     Returns:
-        Configured KeitaroGateway instance with the shared HTTP client.
+        KeitaroAPI that reuses the application-wide httpx client.
     """
     client: httpx.AsyncClient = request.app.state.http_client
     gateway = KeitaroGateway(client)
@@ -31,15 +31,10 @@ def get_service(
 ) -> Service:
     """Create and inject Service with all required dependencies.
 
-    Orchestrates multi-step campaign creation by combining gateway adapters for
-    upstream communication, repository for persistence, and application settings
-    for default campaign configuration (name prefix, group ID, domain ID, etc.).
-
     Args:
-        gateway: KeitaroGateway for HTTP requests to create campaigns.
-        flow_service: FlowService for creating flows and binding offers.
-        settings: Application settings with campaign defaults and database config.
-        campaign_repo: Repository for saving campaign entities locally.
+        api: Keitaro API client for upstream calls.
+        settings: Application settings with campaign defaults.
+        request: Request, used to reach the shared database session factory.
 
     Returns:
         Configured Service instance ready for campaign operations.

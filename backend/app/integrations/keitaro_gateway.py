@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from app.core.exceptions import KeitaroError, KeitaroTimeoutError
+from app.core.exceptions import KeitaroError, KeitaroNotFoundError, KeitaroTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,8 @@ class KeitaroGateway:
     - Base URL construction from settings
     - Api-Key header injection for authentication
     - Timeout enforcement (configurable via settings)
-    - Error translation (HTTP errors → KeitaroError, timeouts → KeitaroTimeoutError)
+    - Error translation (404 → KeitaroNotFoundError, other HTTP errors → KeitaroError,
+      timeouts → KeitaroTimeoutError)
     - Empty response handling (204 No Content → None)
 
     The underlying httpx.AsyncClient is injected at startup and reused across
@@ -53,7 +54,8 @@ class KeitaroGateway:
             Parsed JSON response data or None for 204/empty responses.
 
         Raises:
-            KeitaroError: For non-2xx HTTP errors (401/403/5xx).
+            KeitaroNotFoundError: When Keitaro answers 404.
+            KeitaroError: For other non-2xx responses (401/403/5xx) and network errors.
             KeitaroTimeoutError: When request exceeds configured timeout.
             ValueError wrapper in KeitaroError: On invalid JSON response.
         """
@@ -65,7 +67,9 @@ class KeitaroGateway:
             raise KeitaroError() from exc
 
         if response.is_error:
-            logger.warning("Keitaro returned HTTP %s", response.status_code)
+            logger.warning("Keitaro %s %s returned HTTP %s", method, path, response.status_code)
+            if response.status_code == 404:
+                raise KeitaroNotFoundError()
             raise KeitaroError()
 
         if response.status_code == 204 or not response.content:
@@ -128,20 +132,3 @@ class KeitaroGateway:
             KeitaroError on HTTP failure or invalid response format.
         """
         return await self.request("PUT", path, json=payload)
-
-    async def delete(self, path: str) -> Any:
-        """Execute DELETE request to remove a resource from Keitaro.
-
-        Used for soft-deleting campaigns, flows, or offers. Returns None on
-        successful deletion regardless of status code semantics in Keitaro.
-
-        Args:
-            path: API endpoint path for deletion (e.g., "/campaigns/123").
-
-        Returns:
-            None on success.
-
-        Raises:
-            KeitaroError on HTTP failure or invalid response format.
-        """
-        return await self.request("DELETE", path)

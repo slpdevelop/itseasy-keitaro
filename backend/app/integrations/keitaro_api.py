@@ -9,11 +9,10 @@ if TYPE_CHECKING:
 
 
 class KeitaroAPI:
-    """Gateway for campaign CRUD operations in Keitaro.
+    """Keitaro Admin API client: campaigns, flows (streams) and offers.
 
-    Wraps the parent KeitaroGateway to handle campaign-specific API endpoints.
-    Used by Service for creating, fetching, and deleting campaigns.
-    Handles serialization of campaign payloads with exclude_none for clean requests.
+    Wraps KeitaroGateway with one method per Keitaro endpoint we use. Used by
+    Service. Payloads are serialized with exclude_none for clean requests.
 
     Args:
         gateway: Parent KeitaroGateway instance for HTTP communication.
@@ -22,7 +21,7 @@ class KeitaroAPI:
     """
 
     def __init__(self, gateway: "KeitaroGateway") -> None:
-        """Initialize CampaignGateway with parent HTTP gateway.
+        """Initialize the API client with the HTTP gateway.
 
         Args:
             gateway: KeitaroGateway for making authenticated requests.
@@ -65,9 +64,6 @@ class KeitaroAPI:
 
         Returns:
             Campaign details dictionary from Keitaro API.
-
-        Note:
-            Original code had incorrect return type annotation; this fixes it.
         """
         return await self.gateway.get(f"/campaigns/{campaign_id}")
 

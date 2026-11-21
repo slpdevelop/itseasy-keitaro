@@ -33,25 +33,6 @@ class AppError(Exception):
         self.message: str = message or self.public_message
 
 
-class ConfigurationError(AppError):
-    """Raised when application configuration is invalid.
-
-    Occurs during startup when required environment variables are missing,
-    validation rules fail (e.g., invalid URL format), or production mode
-    lacks API token. Includes list of specific errors in `.errors` attribute.
-
-    Attributes:
-        errors: List of specific configuration issues raised.
-    """
-
-    code = "CONFIGURATION_ERROR"
-    public_message = "Application configuration error"
-
-    def __init__(self, errors: list[str] | None = None, message: str | None = None) -> None:
-        self.errors = errors or []
-        super().__init__(message or "; ".join(self.errors) or self.public_message)
-
-
 class InvalidRequestError(AppError):
     """Raised when request payload cannot be processed for upstream API.
 
@@ -76,11 +57,23 @@ class KeitaroError(AppError):
     cause in error logs for debugging.
 
     Attributes:
-        status_code: Default 502 (bad gateway) for upstream failures.
+        status_code: 502 (bad gateway) for upstream failures.
     """
 
+    status_code = 502
     code = "KEITARO_ERROR"
     public_message = "Keitaro API request failed"
+
+
+class KeitaroNotFoundError(KeitaroError):
+    """Raised when Keitaro answers 404 for the requested resource.
+
+    Callers that know what was requested translate it into a precise 404
+    (for example CampaignNotFoundError); otherwise it stays a 502.
+    """
+
+    code = "KEITARO_NOT_FOUND"
+    public_message = "Resource not found in Keitaro"
 
 
 class KeitaroTimeoutError(KeitaroError):
@@ -127,23 +120,28 @@ class CampaignNotFoundError(AppError):
 
 
 async def app_exception_handler(request: Request, exc: AppError) -> JSONResponse:
-    """Centralized handler for all AppError subclasses.
+    """Handler for all AppError subclasses.
 
-    Logs error with full traceback and returns JSON response with error code
-    and user-friendly message. Protects against information leakage by
-    hiding internal implementation details from clients.
+    Client errors (4xx) are expected: they are logged as warnings and the specific
+    message is returned, so the client knows what to fix. Server and upstream errors
+    (5xx) are logged with a traceback and only the generic public message is returned.
 
     Args:
-        request: FastAPI request object containing path info.
+        request: Current request.
         exc: Application exception instance to handle.
 
     Returns:
-        JSONResponse with status_code, error code, and public message.
+        JSONResponse with the error code and message.
     """
-    logger.error("Application error %s: %s", exc.code, exc, exc_info=True)
+    if exc.status_code >= 500:
+        logger.error("Application error %s: %s", exc.code, exc, exc_info=True)
+        message = exc.public_message
+    else:
+        logger.warning("Application error %s on %s: %s", exc.code, request.url.path, exc)
+        message = exc.message
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": {"code": exc.code, "message": exc.public_message}},
+        content={"error": {"code": exc.code, "message": message}},
     )
 
 

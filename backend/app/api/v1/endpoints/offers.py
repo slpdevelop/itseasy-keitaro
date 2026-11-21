@@ -17,7 +17,7 @@ async def get_local_offers(
     """Get locally stored offers (optional soft-deleted items).
 
     Retrieves all offer entities from the local database. Use `include_deleted=true`
-    to also retrieve soft-deleted offers. Returns paginated list with total count.
+    to also retrieve soft-deleted offers. Returns the list with its total count.
 
     Args:
         include_deleted: Include soft-deleted offers in response. Default: False.

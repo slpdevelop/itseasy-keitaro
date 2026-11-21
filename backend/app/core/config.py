@@ -8,7 +8,6 @@ from typing import Literal
 from pydantic import (
     AliasChoices,
     Field,
-    NonNegativeFloat,
     SecretStr,
     field_validator,
 )
@@ -27,15 +26,12 @@ class Settings(BaseSettings):
     accessing fields by both alias and name.
 
     Sensitive values like passwords are stored as SecretStr and never logged.
-    Validation errors raise ConfigurationError with human-readable messages.
+    Missing or invalid values fail fast at startup with a pydantic ValidationError.
 
     **Required environment variables:**
         - `KEITARO_BASE_URL`: Keitaro admin API base URL (http(s)://)
         - `KEITARO_API_TOKEN`: Authentication token for Keitaro API
-
-    **Optional environment variables:**
-        - `USE_POSTGRESQL`: Enable local PostgreSQL storage (default: False)
-        - All `POSTGRES_*` variables when USE_POSTGRESQL=True
+        - `POSTGRES_DB_URL`: SQLAlchemy async DSN, e.g. postgresql+asyncpg://user:pass@host/db
 
     **Configuration defaults:**
         - Development environment with debug mode off
@@ -91,7 +87,7 @@ class Settings(BaseSettings):
         default_factory=list,
         validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS", "ALLOWED_HOSTS"),
     )
-    """Allowed CORS origins. Use comma-separated list for multiple origins."""
+    """Allowed CORS origins. Set as a JSON list: ["http://localhost:3000"]."""
     cors_allow_credentials: bool = False
     """Allow credentials (cookies, auth headers) in cross-origin requests."""
 
@@ -142,33 +138,12 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Get cached settings instance.
+    """Get the cached settings instance.
 
-    Uses LRU cache to ensure only one Settings object exists in memory,
-    preventing configuration changes between requests. Call during app lifespan.
+    Uses lru_cache so only one Settings object exists and the configuration cannot
+    change between requests.
 
     Returns:
         Single shared Settings instance with validated configuration.
     """
-    settings = Settings()
-    validate_settings(settings)
-    return settings
-
-
-def validate_settings(settings: Settings) -> None:
-    """Perform application-level validation after Pydantic parsing.
-
-    Checks production mode requirements that are not enforced during initialization.
-    Raises ConfigurationError with descriptive messages if validation fails.
-
-    Args:
-        settings: Parsed Settings instance to validate.
-
-    Raises:
-        ConfigurationError: If production is enabled without API token.
-    """
-    errors: list[str] = []
-    if settings.env == "production" and not settings.keitaro_api_token.get_secret_value():
-        errors.append("KEITARO_API_TOKEN is required in production")
-    if errors:
-        raise ConfigurationError(errors)
+    return Settings()
