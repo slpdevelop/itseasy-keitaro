@@ -1,7 +1,8 @@
 from typing import Any
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.dependencies import KeitaroFlowGateway
-from app.core.exceptions import InvalidRequestError
+from app.integrations.flow_gateway import KeitaroFlowGateway
+from app.core.exceptions import FlowNotFoundError, InvalidRequestError
 from app.repositories.campaign_repository import CampaignRepository
 
 
@@ -22,9 +23,13 @@ class FlowService:
         repository: CampaignRepository for flow entity persistence.
     """
 
-    def __init__(self, gateway: KeitaroFlowGateway, repository: CampaignRepository):
+    def __init__(
+        self,
+        gateway: KeitaroFlowGateway,
+        db_session: async_sessionmaker[AsyncSession],
+    ) -> None:
         self.gateway: KeitaroFlowGateway = gateway
-        self.repository = repository
+        self.db_session = db_session
 
     async def update_flow_offers(self, flow_id, offers: list[dict[str, Any]]) -> dict[str, Any]:
         """Update local offer bindings for a flow and return normalized state."""
@@ -39,12 +44,17 @@ class FlowService:
             if state == "deleted" and not item.get("deleted", False):
                 raise InvalidRequestError("Deleted state requires deleted=true")
         try:
-            flow = await self.repository.update_flow_offers(flow_id, offers)
+            async with self.db_session() as session, session.begin():
+                repository = CampaignRepository(session)
+                flow = await repository.update_flow_offers(flow_id, offers)
+                if flow is not None:
+                    # Access relationships while the session is still open.
+                    _ = flow.offers
+                    for link in flow.offers:
+                        _ = link.offer
         except ValueError as exc:
             raise InvalidRequestError(str(exc)) from exc
         if flow is None:
-            from app.core.exceptions import FlowNotFoundError
-
             raise FlowNotFoundError()
         return {
             "success": True,

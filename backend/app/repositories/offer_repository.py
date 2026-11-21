@@ -23,14 +23,14 @@ class OfferRepository:
     Soft-delete (deleted=True) is tracked but does not affect Keitaro data.
 
     Attributes:
-        _session_factory: Async session maker using shared engine from app state.
+        _session: AsyncSession scoped to the caller's transaction.
     """
 
     def __init__(self, session: AsyncSession) -> None:
-        """Initialize repository with SQLAlchemy session factory.
+        """Initialize repository with the request/operation-scoped session.
 
         Args:
-            session_factory: Async session maker configured with engine and settings.
+            session: Active SQLAlchemy async session owned by the service layer.
         """
         self._session = session
 

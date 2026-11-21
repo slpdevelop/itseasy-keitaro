@@ -137,7 +137,7 @@ export default function App() {
     setBusy(direction);
     try {
       const result = direction === 'fetch'
-        ? await api.syncFromKeitaro()
+        ? await api.fetchCampaign(getKeitaroId(selected))
         : await api.syncCampaign(getKeitaroId(selected));
       const errorCount = (result?.errors || []).length;
       const pendingCount = (result?.flows_still_pending || []).length;

@@ -57,12 +57,13 @@ class KeitaroGateway:
             KeitaroTimeoutError: When request exceeds configured timeout.
             ValueError wrapper in KeitaroError: On invalid JSON response.
         """
-        try:
-            response = await self.client.request(method, path, **kwargs)
-        except httpx.TimeoutException as exc:
-            raise KeitaroTimeoutError() from exc
-        except httpx.RequestError as exc:
-            raise KeitaroError() from exc
+        response = await self.client.request(method, path, **kwargs)
+        # try:
+
+        # except httpx.TimeoutException as exc:
+        #     raise KeitaroTimeoutError() from exc
+        # except httpx.RequestError as exc:
+        #     raise KeitaroError() from exc
 
         if response.is_error:
             logger.warning("Keitaro returned HTTP %s", response.status_code)

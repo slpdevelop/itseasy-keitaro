@@ -21,8 +21,7 @@ export const api = {
   keitaroOffers: () => request('/offers'),
   localOffers: () => request('/offers/local'),
   createCampaign: (payload) => request('/campaigns', { method: 'POST', body: JSON.stringify(payload) }),
-  syncFromKeitaro: () => request('/offers/sync/from-keitaro', { method: 'POST' }),
-  syncToKeitaro: () => request('/offers/sync/to-keitaro', { method: 'POST' }),
+  fetchCampaign: (campaignId) => request(`/campaigns/${campaignId}/fetch`, { method: 'POST' }),
   syncCampaign: (campaignId) => request(`/campaigns/${campaignId}/sync`, { method: 'POST' }),
   updateFlow: (flowId, offers) => request(`/campaigns/streams/${flowId}`, {
     method: 'PUT', body: JSON.stringify({ offers }),

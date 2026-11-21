@@ -3,6 +3,8 @@
 from uuid import UUID
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.core.exceptions import InvalidRequestError, OfferNotFoundError
 from app.models.models import Offer
 from app.repositories.offer_repository import OfferRepository
@@ -26,9 +28,13 @@ class OfferService:
         repository: OfferRepository for CRUD operations on local offers.
     """
 
-    def __init__(self, gateway: Any, repository: OfferRepository) -> None:
+    def __init__(
+        self,
+        gateway: Any,
+        db_session: async_sessionmaker[AsyncSession],
+    ) -> None:
         self.gateway = gateway
-        self.repository = repository
+        self.db_session = db_session
 
     async def get_keitaro_offers(self) -> Any:
         """Fetch complete offer catalog from Keitaro API.
@@ -67,7 +73,8 @@ class OfferService:
         Returns:
             List of Offer entities ordered by name. Empty if none found.
         """
-        return await self.repository.get_all(include_deleted=include_deleted)
+        async with self.db_session() as session:
+            return await OfferRepository(session).get_all(include_deleted=include_deleted)
 
     async def add_offer(self, keitaro_id: int):
         """Import a Keitaro offer into local database and mark as synced.
@@ -94,19 +101,26 @@ class OfferService:
         returned_id = data.get("id")
         name = data.get("name")
 
-        existing = await self.repository.get_by_keitaro_id(keitaro_id)
-        if existing is not None:
-            if existing.deleted:
-                # The offer was fetched and validated against Keitaro just above.
-                restored = await self.repository.set_deleted(
-                    existing.id, deleted=False, synced=True
-                )
-                if restored is None:  # defensive: row may have been removed concurrently
-                    raise OfferNotFoundError()
-                return restored
-            return existing
+        if not isinstance(returned_id, int) or returned_id != keitaro_id:
+            raise InvalidRequestError("Keitaro returned an offer with a mismatched ID")
+        if not isinstance(name, str) or not name.strip():
+            raise InvalidRequestError("Keitaro returned an offer without a valid name")
 
-        return await self.repository.create(keitaro_id=keitaro_id, name=name.strip(), synced=True)
+        async with self.db_session() as session, session.begin():
+            repository = OfferRepository(session)
+            existing = await repository.get_by_keitaro_id(keitaro_id)
+            if existing is not None:
+                if existing.deleted:
+                    restored = await repository.set_deleted(
+                        existing.id, deleted=False, synced=True
+                    )
+                    if restored is None:
+                        raise OfferNotFoundError()
+                    return restored
+                return existing
+            return await repository.create(
+                keitaro_id=keitaro_id, name=name.strip(), synced=True
+            )
 
     async def delete_offer(self, offer_id: UUID) -> Offer:
         """Soft-delete a local offer record (logical removal).
@@ -124,10 +138,11 @@ class OfferService:
         Raises:
             OfferNotFoundError: If offer not found in database.
         """
-        offer: Offer | None = await self.repository.set_deleted(offer_id, deleted=True)
-        if offer is None:
-            raise OfferNotFoundError()
-        return offer
+        async with self.db_session() as session, session.begin():
+            offer = await OfferRepository(session).set_deleted(offer_id, deleted=True)
+            if offer is None:
+                raise OfferNotFoundError()
+            return offer
 
     async def restore_offer(self, offer_id: UUID) -> Offer:
         """Restore a soft-deleted offer to active state.
@@ -145,7 +160,8 @@ class OfferService:
         Raises:
             OfferNotFoundError: If offer not found in database.
         """
-        offer: Offer | None = await self.repository.set_deleted(offer_id, deleted=False)
-        if offer is None:
-            raise OfferNotFoundError()
-        return offer
+        async with self.db_session() as session, session.begin():
+            offer = await OfferRepository(session).set_deleted(offer_id, deleted=False)
+            if offer is None:
+                raise OfferNotFoundError()
+            return offer
