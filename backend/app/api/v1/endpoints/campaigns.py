@@ -7,6 +7,7 @@ from app.schemas.campaign import (
     CampaignDetailResponse,
     KTCampaignCreateRequest,
     KTCampaignCreateResponse,
+    SyncResult,
 )
 from app.schemas.flow import FlowOffersUpdateRequest
 from fastapi import APIRouter, Path, status
@@ -20,10 +21,10 @@ async def get_campaigns(service: CampaignServiceDep) -> list[dict]:
     return await service.get_campaigns()
 
 
-@router.get("/{campaign_id}", response_model=dict)
+@router.get("/{campaign_id}", response_model=CampaignDetailResponse)
 async def get_campaign_detail(
     campaign_id: Annotated[int, Path(gt=0)], service: CampaignServiceDep
-) -> dict:
+) -> CampaignDetailResponse:
     """Retrieve detailed information about a specific campaign."""
     return await service.get_campaign_detail(campaign_id)
 
@@ -34,6 +35,19 @@ async def create_campaign(
 ) -> KTCampaignCreateResponse:
     """Create a new campaign with associated GEO and OFFER flows."""
     return await service.create_campaign(data)
+
+
+@router.post("/{campaign_id}/sync", response_model=SyncResult)
+async def sync_campaign(
+    campaign_id: Annotated[int, Path(gt=0)], service: CampaignServiceDep
+) -> SyncResult:
+    """Push pending local offer changes of one campaign's flows to Keitaro.
+
+    Only OFFER flows of the given campaign (Keitaro ID) with unsynchronized
+    bindings are sent. A failure on one flow does not stop the others; it is
+    reported in the result with the stage it happened at.
+    """
+    return await service.sync_campaign(campaign_id)
 
 
 @router.put("/streams/{flow_id}")

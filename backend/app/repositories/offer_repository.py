@@ -1,5 +1,6 @@
 """Persistence operations for locally managed Keitaro offers."""
 
+from collections.abc import Collection
 from datetime import datetime
 from uuid import UUID
 
@@ -7,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Offer
+from app.schemas.offer import RemoteOffer
 
 
 class OfferRepository:
@@ -32,7 +34,7 @@ class OfferRepository:
         """
         self._session = session
 
-    async def get_map_by_keitaro_ids(self, keitaro_ids: list[int]) -> dict[int, Offer]:
+    async def get_map_by_keitaro_ids(self, keitaro_ids: Collection[int]) -> dict[int, Offer]:
         ids = set(keitaro_ids)
         if not ids:
             return {}
@@ -122,16 +124,35 @@ class OfferRepository:
         await self._session.refresh(offer)
         return offer
 
-    async def bulk_create(self, offers: list[dict], *, synced=True, fetched_at=None) -> list[Offer]:
+    async def bulk_create(
+        self,
+        offers: list[RemoteOffer],
+        *,
+        synced: bool = True,
+        fetched_at: datetime | None = None,
+    ) -> list[Offer]:
+        """Create local offer records from Keitaro offers in a single flush.
+
+        Callers must pass only offers that do not exist locally yet
+        (see ``get_missing_keitaro_ids``); keitaro_id is unique.
+
+        Args:
+            offers: Validated offers from Keitaro.
+            synced: Whether the records are known to match Keitaro. Default True.
+            fetched_at: Timestamp of the fetch to store on every record.
+
+        Returns:
+            Created Offer entities with database-assigned UUIDs.
+        """
         new_offers: list[Offer] = [
             Offer(
-                keitaro_id=o["id"],
-                name=o["name"],
+                keitaro_id=offer.id,
+                name=offer.name,
                 synced=synced,
                 deleted=False,
                 fetched_at=fetched_at,
             )
-            for o in offers
+            for offer in offers
         ]
 
         self._session.add_all(new_offers)

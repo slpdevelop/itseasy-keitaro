@@ -1,4 +1,7 @@
-from pydantic import BaseModel, ConfigDict, Field
+import json
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class FlowFilter(BaseModel):
@@ -77,3 +80,98 @@ class FlowOffersUpdateRequest(BaseModel):
     offers: list[FlowOfferUpdate]
 
     model_config = ConfigDict(extra="ignore")
+
+
+RemoteOfferState = Literal["active", "disabled"]
+
+
+class RemoteFlowOffer(BaseModel):
+    """Offer binding as returned by Keitaro inside a stream.
+
+    Attributes:
+        offer_id: Keitaro ID of the offer itself (not the ID of the binding).
+        share: Traffic share percentage (0-100).
+        state: "active" or "disabled"; Keitaro may send null, which means active.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    offer_id: int = Field(gt=0)
+    share: int = Field(ge=0, le=100)
+    state: RemoteOfferState = "active"
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def default_state(cls, value: object) -> object:
+        """Treat a missing/null state as active."""
+        return value or "active"
+
+
+class RemoteFlow(BaseModel):
+    """Flow/stream as returned by Keitaro `/campaigns/{id}/streams`.
+
+    Validates the upstream response once, so the service layer works with typed
+    attributes instead of raw dict keys.
+
+    Attributes:
+        id: Keitaro numeric ID of the flow.
+        name: Flow name; may be empty in Keitaro.
+        schema_: Flow schema (e.g. "redirect", "landings").
+        action_type: Keitaro action type.
+        action_payload: Action payload as text; non-string values are JSON-encoded.
+        country: Country code parsed from an accepting "country" filter, if any.
+        offers: Offer bindings; empty for GEO flows.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: int = Field(gt=0)
+    name: str = ""
+    schema_: str | None = Field(default=None, alias="schema")
+    action_type: str | None = None
+    action_payload: str | None = None
+    country: str | None = None
+    offers: list[RemoteFlowOffer] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_country(cls, data: Any) -> Any:
+        """Derive `country` from the flow filters without failing on unknown filters."""
+        if not isinstance(data, dict):
+            return data
+        country: str | None = None
+        for item in data.get("filters") or []:
+            if not isinstance(item, dict):
+                continue
+            payload = item.get("payload")
+            if (
+                item.get("name") == "country"
+                and item.get("mode") == "accept"
+                and isinstance(payload, list)
+                and len(payload) == 1
+                and isinstance(payload[0], str)
+                and len(payload[0].strip()) == 2
+            ):
+                country = payload[0].strip().upper()
+                break
+        return {**data, "country": country}
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def default_name(cls, value: object) -> object:
+        """Treat a null name as empty."""
+        return value or ""
+
+    @field_validator("action_payload", mode="before")
+    @classmethod
+    def payload_to_text(cls, value: object) -> object:
+        """Keep strings as-is and JSON-encode anything else for the TEXT column."""
+        if value is None or isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    @field_validator("offers", mode="before")
+    @classmethod
+    def default_offers(cls, value: object) -> object:
+        """Treat null offers as an empty list."""
+        return value or []

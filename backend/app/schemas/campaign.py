@@ -1,22 +1,21 @@
 import secrets
 import string
 from datetime import datetime
-from typing import Any, Literal, LiteralString
+from enum import StrEnum
+from typing import Annotated, Any, Literal, LiteralString, Self
 from uuid import UUID
 
 from app.schemas.base import Base
 from pydantic import (
     AliasPath,
     BaseModel,
-    Field,
-    field_validator,
     ConfigDict,
     Field,
     StringConstraints,
     computed_field,
+    field_validator,
+    model_validator,
 )
-from enum import StrEnum
-from typing import Annotated
 
 
 class KTCampaignCreateRequest(BaseModel):
@@ -174,6 +173,26 @@ class CampaignDetailResponse(Base):
     flows: list[CampaignFlowDetailResponse]
 
 
+class RemoteCampaign(BaseModel):
+    """Campaign as returned by Keitaro `/campaigns/{id}`.
+
+    Attributes:
+        id: Keitaro numeric ID of the campaign.
+        name: Campaign name (with prefix).
+        domain_id: Keitaro domain ID, if assigned.
+        group_id: Keitaro group ID, if assigned.
+        traffic_source_id: Keitaro traffic source ID, if assigned.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: int = Field(gt=0)
+    name: str
+    domain_id: int | None = None
+    group_id: int | None = None
+    traffic_source_id: int | None = None
+
+
 # keitaro_id: поправьте тип, если у вас str
 KeitaroFlowId = int
 
@@ -197,6 +216,7 @@ class SyncError(BaseModel):
 
 
 class SyncResult(BaseModel):
+    campaign_id: KeitaroFlowId = Field(description="Keitaro ID кампании, чьи флоу синхронизировались")
     flows_checked: Annotated[int, Field(ge=0, description="Сколько флоу было в выборке")] = 0
     flows_synced: Annotated[int, Field(ge=0, description="Полностью подтверждены")] = 0
     flows_still_pending: Annotated[
@@ -280,6 +300,13 @@ class FlowPush(BaseModel):
         ),
     ]
 
+    @model_validator(mode="after")
+    def check_shares_total(self) -> Self:
+        """Keitaro принимает только распределение ровно в 100%; пустой список допустим."""
+        if self.offers and sum(offer.share for offer in self.offers) != 100:
+            raise ValueError("Offer shares of a flow must total exactly 100")
+        return self
+
     @classmethod
     def from_flow(cls, flow: Any) -> "FlowPush":
         """Строить только внутри открытой сессии: читает flow.offers и link.offer."""
@@ -304,11 +331,6 @@ class FlowPush(BaseModel):
                 for link in flow.offers
             },
         )
-
-    @property
-    def offers_payload(self) -> list[dict[str, Any]]:
-        """Формат, который ждёт gateway.update_flow_offers."""
-        return [offer.model_dump() for offer in self.offers]
 
     @property
     def pushed_fingerprints(self) -> dict[UUID, tuple[int, str, bool]]:

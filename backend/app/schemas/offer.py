@@ -135,3 +135,17 @@ class OfferRestoreResponse(Base):
     id: UUID
     deleted: bool
     synced: bool
+
+
+class RemoteOffer(BaseModel):
+    """Offer as returned by Keitaro `/offers/{id}`.
+
+    Attributes:
+        id: Keitaro numeric ID of the offer.
+        name: Offer display name.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: int = Field(gt=0)
+    name: str

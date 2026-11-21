@@ -9,9 +9,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
-from app.core.exceptions import CampaignCreationError, FlowNotFoundError
 from sqlalchemy.sql.selectable import Select
+
+from app.core.exceptions import CampaignCreationError, FlowNotFoundError
+from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
+from app.schemas.campaign import RemoteCampaign
 
 
 class CampaignRepository:
@@ -36,18 +38,35 @@ class CampaignRepository:
         """
         self._session: AsyncSession = session
 
-    async def create_or_update_campaign(self, keitaro_campaign: dict) -> Campaign:
-        now: datetime = datetime.now(timezone.utc)
-        campaign = await self._get_by_keitaro_id(self._session, Campaign, keitaro_campaign["id"])
-        if not campaign:
-            campaign = Campaign(keitaro_id=keitaro_campaign["id"])
+    async def create_or_update_campaign(
+        self, remote: RemoteCampaign, *, fetched_at: datetime
+    ) -> Campaign:
+        """Upsert a local campaign projection from the Keitaro response.
+
+        Overwrites all Keitaro-owned fields, marks the campaign as synced and
+        restores it if it was soft-deleted locally. Flushes so the returned entity
+        has its local UUID assigned.
+
+        Args:
+            remote: Validated campaign data from Keitaro.
+            fetched_at: Timestamp of the fetch, shared with flows and offers of the
+                same operation.
+
+        Returns:
+            Created or updated Campaign entity.
+        """
+        campaign = await self._get_by_keitaro_id(self._session, Campaign, remote.id)
+        if campaign is None:
+            campaign = Campaign(keitaro_id=remote.id)
             self._session.add(campaign)
 
-        campaign.name = keitaro_campaign["name"]
-        campaign.domain_keitaro_id = keitaro_campaign["domain_id"]
-        campaign.group_keitaro_id = keitaro_campaign["group_id"]
-        campaign.traffic_source_keitaro_id = keitaro_campaign["traffic_source_id"]
-        campaign.fetched_at = now
+        campaign.name = remote.name
+        campaign.domain_keitaro_id = remote.domain_id
+        campaign.group_keitaro_id = remote.group_id
+        campaign.traffic_source_keitaro_id = remote.traffic_source_id
+        campaign.fetched_at = fetched_at
+        campaign.synced = True
+        campaign.deleted = False
         await self._session.flush()
         return campaign
 
@@ -403,15 +422,27 @@ class CampaignRepository:
             await session.flush()
             return flow
 
-    async def get_flows_pending_sync(self) -> list[Flow]:
-        """Fetch OFFER flows needing push sync to Keitaro.
-
-        Returns flows where either Flow.synced=False or any FlowOffer.binding
-        has synced=False. Excludes GEO flows and soft-deleted flows. Uses EXISTS
-        subquery to find flows with dirty bindings without full JOINs.
+    async def get_by_keitaro_id(self, keitaro_id: int) -> Campaign | None:
+        """Fetch a local campaign by its Keitaro numeric ID (without nested data).
 
         Args:
-            None
+            keitaro_id: Numeric ID of the campaign in Keitaro.
+
+        Returns:
+            Campaign entity if stored locally, None otherwise.
+        """
+        return await self._get_by_keitaro_id(self._session, Campaign, keitaro_id)
+
+    async def get_flows_pending_sync(self, campaign_id: UUID) -> list[Flow]:
+        """Fetch OFFER flows of one campaign needing push sync to Keitaro.
+
+        Returns flows of the campaign where either Flow.synced=False or any
+        FlowOffer binding has synced=False. Excludes GEO flows and soft-deleted
+        flows. Uses EXISTS subquery to find flows with dirty bindings without
+        full JOINs.
+
+        Args:
+            campaign_id: Local UUID of the campaign (Campaign.id, not keitaro_id).
 
         Returns:
             List of Flow entities with nested offers loaded for payload building.
@@ -426,7 +457,11 @@ class CampaignRepository:
         )
         query = (
             select(Flow)
-            .where(Flow.deleted.is_(False), Flow.type == FlowType.OFFER)
+            .where(
+                Flow.campaign_id == campaign_id,
+                Flow.deleted.is_(False),
+                Flow.type == FlowType.OFFER,
+            )
             .where(or_(Flow.synced.is_(False), dirty_link))
             .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
             .order_by(Flow.keitaro_id)

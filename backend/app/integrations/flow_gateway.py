@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from app.integrations.keitaro import KeitaroGateway
+from app.schemas.campaign import OfferPayload
 from app.schemas.flow import FlowCreate
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ class KeitaroFlowGateway:
         """
         return await self.gateway.get(f"/campaigns/{campaign_id}/streams")
 
-    async def update_flow_offers(self, flow_id: int, offers: list[dict[str, Any]]) -> Any:
+    async def update_flow_offers(self, flow_id: int, offers: list[OfferPayload]) -> Any:
         """Update offer bindings for an existing flow without changing other settings.
 
         Sends only the offers field to Keitaro's PUT endpoint, preserving all
@@ -68,12 +69,14 @@ class KeitaroFlowGateway:
 
         Args:
             flow_id: Numeric ID of the flow whose offers to update.
-            offers: List of offer dicts with offer_id, share (0-100), and state.
+            offers: List of OfferPayload with offer_id, share (0-100), and state.
 
         Returns:
             Updated flow data or raw response from Keitaro.
         """
-        return await self.gateway.put(f"/streams/{flow_id}", {"offers": offers})
+        return await self.gateway.put(
+            f"/streams/{flow_id}", {"offers": [offer.model_dump() for offer in offers]}
+        )
 
     async def get_offer_details(self, offer_id: int) -> Any:
         """Retrieve an offer from Keitaro to resolve its display name during sync."""
