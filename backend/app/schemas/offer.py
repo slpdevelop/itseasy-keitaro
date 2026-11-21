@@ -29,44 +29,6 @@ class OfferListResponse(Base):
     total: int
 
 
-class CampaignOffersResponse(Base):
-    """Offers response scoped to a specific campaign.
-
-    Returns list of offers configured within a campaign's flow bindings.
-    Includes campaign_id reference for context and pagination metadata.
-    """
-
-    campaign_id: int
-    items: list[OfferResponse]
-    total: int
-
-
-class CampaignOffersUpdate(BaseModel):
-    """Request payload to update offer bindings on a campaign.
-
-    Used when modifying which offers should receive traffic from a campaign.
-    Contains only the list of Keitaro offer IDs to activate or include.
-
-    Attributes:
-        offer_ids: List of offer numeric IDs to add to the campaign flow.
-    """
-
-    offer_ids: list[int] = Field(min_length=1)
-
-
-class CampaignOffersUpdateResponse(Base):
-    """Response after updating campaign offer bindings.
-
-    Reports added and removed offer IDs along with total count for confirmation.
-    Used by POST /api/v1/campaigns/{id}/offers update endpoint.
-    """
-
-    campaign_id: int
-    added: list[int] = Field(default_factory=list)
-    removed: list[int] = Field(default_factory=list)
-    total: int
-
-
 class LocalOfferResponse(Base):
     """Detailed local offer record from database with tracking metadata.
 

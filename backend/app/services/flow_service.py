@@ -1,7 +1,7 @@
 from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.integrations.flow_gateway import KeitaroFlowGateway
+from app.integrations.keitaro_api import KeitaroAPI
 from app.core.exceptions import FlowNotFoundError, InvalidRequestError
 from app.repositories.campaign_repository import CampaignRepository
 
@@ -30,107 +30,3 @@ class FlowService:
     ) -> None:
         self.gateway: KeitaroFlowGateway = gateway
         self.db_session = db_session
-
-    async def update_flow_offers(self, flow_id, offers: list[dict[str, Any]]) -> dict[str, Any]:
-        """Update local offer bindings for a flow and return normalized state."""
-        if len({item.get("offer_id") for item in offers}) != len(offers):
-            raise InvalidRequestError("An offer cannot be added to the same flow more than once")
-        for item in offers:
-            if not isinstance(item.get("offer_id"), int) or item["offer_id"] <= 0:
-                raise InvalidRequestError("Invalid Keitaro offer ID")
-            state = item.get("state", "active")
-            if state not in {"active", "disabled", "deleted"}:
-                raise InvalidRequestError("Offer state must be 'active', 'disabled' or 'deleted'")
-            if state == "deleted" and not item.get("deleted", False):
-                raise InvalidRequestError("Deleted state requires deleted=true")
-        try:
-            async with self.db_session() as session, session.begin():
-                repository = CampaignRepository(session)
-                flow = await repository.update_flow_offers(flow_id, offers)
-                if flow is not None:
-                    # Access relationships while the session is still open.
-                    _ = flow.offers
-                    for link in flow.offers:
-                        _ = link.offer
-        except ValueError as exc:
-            raise InvalidRequestError(str(exc)) from exc
-        if flow is None:
-            raise FlowNotFoundError()
-        return {
-            "success": True,
-            "flow_id": str(flow.id),
-            "offers": [
-                {
-                    "offer_id": link.offer.keitaro_id,
-                    "share": link.share,
-                    "pinned": link.pinned,
-                    "state": link.state.value,
-                    "deleted": link.deleted,
-                    "synced": link.synced,
-                }
-                for link in flow.offers
-            ],
-        }
-
-    @staticmethod
-    def _extract_flows(response: Any) -> list[dict[str, Any]]:
-        """Extract flows/streams from various Keitaro API response formats.
-
-        Handles different possible response structures (list, dict with streams/items/data keys).
-        Validates extracted data is array of dicts; raises error if format mismatch.
-
-        Args:
-            response: Raw API response object to parse.
-
-        Returns:
-            List of flow dictionaries from response.
-
-        Raises:
-            InvalidRequestError: If response structure invalid or flows not found.
-        """
-        if isinstance(response, list):
-            flows = response
-        elif isinstance(response, dict):
-            flows = response.get("streams", response.get("items", response.get("data")))
-        else:
-            flows = None
-        if not isinstance(flows, list) or any(not isinstance(item, dict) for item in flows):
-            raise InvalidRequestError("Keitaro returned an invalid campaign streams response")
-        return flows
-
-    @staticmethod
-    def _validate_remote_offers(items: Any) -> list[dict[str, Any]]:
-        """Validate and extract offer bindings from Keitaro stream response.
-
-        Checks each item in offers array has valid numeric ID (int > 0), share (0-100),
-        and state ("active" or "disabled"). Returns cleaned list for repository processing.
-
-        Args:
-            items: Array of offer dicts from Keitaro stream response.
-
-        Returns:
-            Validated list of offer dictionaries with offer_id, share, state keys.
-
-        Raises:
-            InvalidRequestError: If any item fails validation checks.
-        """
-        if not isinstance(items, list):
-            raise InvalidRequestError("Keitaro returned an invalid stream offers collection")
-        validated = []
-        for item in items:
-            if not isinstance(item, dict):
-                raise InvalidRequestError("Keitaro returned an invalid stream offer")
-            offer_id = item.get("offer_id")
-            share = item.get("share")
-            state = item.get("state") or "active"
-            if not isinstance(offer_id, int) or offer_id <= 0:
-                raise InvalidRequestError("Keitaro returned an invalid offer ID in a stream")
-            if not isinstance(share, int) or not 0 <= share <= 100:
-                raise InvalidRequestError("Keitaro returned an invalid offer share in a stream")
-            if state not in {"active", "disabled"}:
-                raise InvalidRequestError("Keitaro returned an invalid offer state in a stream")
-            validated.append({"offer_id": offer_id, "share": share, "state": state})
-        return validated
-
-    async def get_campaign_flows(self, campaign_id: int) -> list[dict]:
-        return await self.gateway.get_campaign_flows(campaign_id=campaign_id)

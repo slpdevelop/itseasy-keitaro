@@ -2,7 +2,7 @@ from typing import Annotated
 
 from uuid import UUID
 
-from app.api.dependencies import CampaignServiceDep, FlowServiceDep
+from app.api.dependencies import CampaignServiceDep
 from app.schemas.campaign import (
     CampaignDetailResponse,
     KTCampaignCreateRequest,
@@ -62,7 +62,7 @@ async def fetch_campaign(
 async def update_campaign_stream_offers(
     flow_id: UUID,
     data: FlowOffersUpdateRequest,
-    service: FlowServiceDep,
+    service: CampaignServiceDep,
 ) -> dict:
     """Update local offer bindings for a campaign stream.
 

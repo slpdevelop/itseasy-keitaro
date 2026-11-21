@@ -19,8 +19,7 @@ from app.core.exceptions import (
     InvalidRequestError,
     KeitaroError,
 )
-from app.integrations.keitaro_api import KeitaroCampaignGateway
-from app.integrations.flow_gateway import KeitaroFlowGateway
+from app.integrations.keitaro_api import KeitaroAPI
 from app.integrations.keitaro_gateway import KeitaroGateway
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
 from app.repositories.campaign_repository import CampaignRepository
@@ -141,8 +140,6 @@ class CampaignService:
         db_session: "async_sessionmaker[AsyncSession]",
     ) -> None:
         self.gateway: KeitaroGateway = gateway
-        self.campaign_gateway: KeitaroCampaignGateway = KeitaroCampaignGateway(gateway)
-        self.flow_gateway: KeitaroFlowGateway = KeitaroFlowGateway(gateway)
         self.settings: Settings = settings
         self.db_session: "async_sessionmaker[AsyncSession]" = db_session
 
@@ -156,7 +153,7 @@ class CampaignService:
         Returns:
             List of campaign dictionaries with names starting from configured prefix.
         """
-        campaigns: list[dict] = await self.campaign_gateway.get_campaigns()
+        campaigns: list[dict] = await KeitaroAPI(self.gateway).get_campaigns()
         return [
             campaign
             for campaign in campaigns
@@ -259,8 +256,8 @@ class CampaignService:
             KeitaroError: If the response does not match the expected structure.
         """
         raw_campaign, raw_flows = await asyncio.gather(
-            self.campaign_gateway.get_by_id(keitaro_id),
-            self.flow_gateway.get_campaign_flows(keitaro_id),
+            KeitaroAPI(self.gateway).get_campaign_by_id(keitaro_id),
+            KeitaroAPI(self.gateway).get_campaign_flows(keitaro_id),
         )
         try:
             remote_campaign = RemoteCampaign.model_validate(raw_campaign)
@@ -300,7 +297,7 @@ class CampaignService:
         async def _get_offer(offer_id: int) -> RemoteOffer:
             async with sem:
                 try:
-                    raw_offer = await self.flow_gateway.get_offer_details(offer_id)
+                    raw_offer = await KeitaroAPI(self.gateway).get_offer_details(offer_id)
                     return RemoteOffer.model_validate(raw_offer)
                 except Exception:
                     logger.exception(
@@ -517,7 +514,7 @@ class CampaignService:
             traffic_source_id=self.settings.campaign_traffic_source_id,
             state="active",
         )
-        response = await self.campaign_gateway.create_campaign(payload)
+        response = await KeitaroAPI(self.gateway).create_campaign(payload)
         campaign_id = response.get("id") if isinstance(response, dict) else None
         if not isinstance(campaign_id, int) or campaign_id <= 0:
             raise CampaignCreationError("Keitaro did not return a valid campaign id")
@@ -545,7 +542,7 @@ class CampaignService:
             schema="redirect",
             filters=[FlowFilter(name="country", mode="accept", payload=[geo_code])],
         )
-        return await self.flow_gateway.create_flow(geo_flow_data)
+        return await KeitaroAPI(self.gateway).create_flow(geo_flow_data)
 
     async def _create_offer_flow(self, campaign_id: int, offer_id_list: list[int]) -> dict:
         """Create OFFER flow with specified offer bindings within campaign.
@@ -577,7 +574,7 @@ class CampaignService:
             schema="landings",
             offers=offers,
         )
-        return await self.flow_gateway.create_flow(offer_flow_data)
+        return await KeitaroAPI(self.gateway).create_flow(offer_flow_data)
 
     async def _save_campaign_to_db(
         self,
@@ -662,7 +659,7 @@ class CampaignService:
         for item in pending:
             # 2. Network phase
             try:
-                await self.flow_gateway.update_flow_offers(item.keitaro_id, item.offers)
+                await KeitaroAPI(self.gateway).update_flow_offers(item.keitaro_id, item.offers)
             except Exception as exc:
                 logger.exception("Keitaro push failed for flow %s", item.keitaro_id)
                 result.add_error(item.keitaro_id, SyncErrorStage.PUSH, exc)
@@ -692,3 +689,44 @@ class CampaignService:
                 result.flows_still_pending.append(item.keitaro_id)
 
         return result
+
+    async def update_flow_offers(self, flow_id, offers: list[dict[str, Any]]) -> dict[str, Any]:
+        """Update local offer bindings for a flow and return normalized state."""
+        if len({item.get("offer_id") for item in offers}) != len(offers):
+            raise InvalidRequestError("An offer cannot be added to the same flow more than once")
+        for item in offers:
+            if not isinstance(item.get("offer_id"), int) or item["offer_id"] <= 0:
+                raise InvalidRequestError("Invalid Keitaro offer ID")
+            state = item.get("state", "active")
+            if state not in {"active", "disabled", "deleted"}:
+                raise InvalidRequestError("Offer state must be 'active', 'disabled' or 'deleted'")
+            if state == "deleted" and not item.get("deleted", False):
+                raise InvalidRequestError("Deleted state requires deleted=true")
+        try:
+            async with self.db_session() as session, session.begin():
+                repository = CampaignRepository(session)
+                flow = await repository.update_flow_offers(flow_id, offers)
+                if flow is not None:
+                    # Access relationships while the session is still open.
+                    _ = flow.offers
+                    for link in flow.offers:
+                        _ = link.offer
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        if flow is None:
+            raise FlowNotFoundError()
+        return {
+            "success": True,
+            "flow_id": str(flow.id),
+            "offers": [
+                {
+                    "offer_id": link.offer.keitaro_id,
+                    "share": link.share,
+                    "pinned": link.pinned,
+                    "state": link.state.value,
+                    "deleted": link.deleted,
+                    "synced": link.synced,
+                }
+                for link in flow.offers
+            ],
+        }

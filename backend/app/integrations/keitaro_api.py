@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from app.schemas.flow import FlowCreate
 
 
-class KeitaroCampaignGateway:
+class KeitaroAPI:
     """Gateway for campaign CRUD operations in Keitaro.
 
     Wraps the parent KeitaroGateway to handle campaign-specific API endpoints.
@@ -54,7 +54,7 @@ class KeitaroCampaignGateway:
         """
         return await self.gateway.post("/campaigns", data.model_dump(exclude_none=True))
 
-    async def get_by_id(self, campaign_id: int) -> dict:
+    async def get_campaign_by_id(self, campaign_id: int) -> dict:
         """Fetch a single campaign's details from Keitaro by ID.
 
         Retrieves complete campaign configuration for the specified numeric ID.

@@ -5,9 +5,7 @@ from fastapi import Depends, Request
 
 from app.core.config import Settings, get_settings
 from app.integrations.keitaro_gateway import KeitaroGateway
-from app.integrations.flow_gateway import KeitaroFlowGateway
 from app.services.campaign_service import CampaignService
-from app.services.flow_service import FlowService
 from app.services.offer_service import OfferService
 
 
@@ -29,17 +27,6 @@ def get_keitaro_gateway(request: Request) -> KeitaroGateway:
 
 
 KeitaroDep = Annotated[KeitaroGateway, Depends(get_keitaro_gateway)]
-
-
-def get_flow_service(gateway: KeitaroDep, request: Request) -> FlowService:
-    """Build a flow service using the application's shared session factory."""
-    return FlowService(
-        gateway=KeitaroFlowGateway(gateway),
-        db_session=request.app.state.session_factory,
-    )
-
-
-FlowServiceDep = Annotated[FlowService, Depends(get_flow_service)]
 
 
 def get_campaign_service(
