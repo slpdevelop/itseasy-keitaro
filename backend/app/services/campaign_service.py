@@ -265,7 +265,7 @@ class CampaignService:
         )
         try:
             remote_campaign = RemoteCampaign.model_validate(raw_campaign)
-            remote_flows = REMOTE_FLOWS_ADAPTER.validate_python(raw_flows)
+            remote_flows: list[RemoteFlow] = REMOTE_FLOWS_ADAPTER.validate_python(raw_flows)
         except ValidationError as exc:
             logger.warning(
                 "Invalid Keitaro response for campaign %s: %s",
@@ -335,7 +335,7 @@ class CampaignService:
                 flow = Flow(keitaro_id=remote.id, campaign_id=campaign.id, offers=[])
                 flows.add(flow)
 
-            flow.type = FlowType.OFFER if remote.offers else FlowType.GEO
+            flow.type = FlowType.OFFER if not remote.action_payload else FlowType.GEO
             flow.name = remote.name or flow.type.value
             flow.position = position
             flow.schema = remote.schema_

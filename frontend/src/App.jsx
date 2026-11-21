@@ -176,7 +176,9 @@ export default function App() {
           const current=getCurrentOffers(flow), flowId=flow.id ?? flow.stream_id ?? index, keitaroFlowId=flow.keitaro_id ?? flow.stream_id ?? flowId;
           const boundIds=current.map(getOfferId).filter(x=>x!=null).map(String);
           const available=offers.filter(o=>!boundIds.includes(String(getId(o)))&&!boundIds.includes(String(o.keitaro_id)));
-          const hideBody = isGeoFlow(flow);
+          // GEO redirect flows normally have no offer editor, but if the API
+          // returns offer bindings (including soft-deleted ones), keep the body visible.
+          const hideBody = isGeoFlow(flow) && current.length === 0;
           return <article className="flow-card" key={flowId}>
             <div className="flow-top" onClick={()=>setExpanded(p=>({...p,[flowId]:!p[flowId]}))}><div className="flow-type-icon"><Layers3 size={18}/></div><div className="flow-title"><div><b>{flow.name || `Flow ${flowId}`}</b><span className="flow-id">ID #{keitaroFlowId}</span></div><small>{flow.type || flow.schema || 'Regular flow'} · {flow.state || 'Active'}</small></div><div className="flow-offer-count">{current.length} {current.length===1?'offer':'offers'}</div><button className="expand-btn" aria-label="Toggle flow"><ChevronDown className={expanded[flowId]===false?'collapsed':''} size={18}/></button></div>
             {expanded[flowId]!==false&&hideBody==false&&<div className="flow-body">

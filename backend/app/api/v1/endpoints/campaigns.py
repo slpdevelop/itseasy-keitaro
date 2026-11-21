@@ -50,6 +50,14 @@ async def sync_campaign(
     return await service.sync_campaign(campaign_id)
 
 
+@router.post("/{campaign_id}/fetch", response_model=CampaignDetailResponse)
+async def fetch_campaign(
+    campaign_id: Annotated[int, Path(gt=0)], service: CampaignServiceDep
+) -> CampaignDetailResponse:
+
+    return await service.fetch_campaign(campaign_id)
+
+
 @router.put("/streams/{flow_id}")
 async def update_campaign_stream_offers(
     flow_id: UUID,
