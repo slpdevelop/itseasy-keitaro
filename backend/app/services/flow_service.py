@@ -62,56 +62,6 @@ class FlowService:
             ],
         }
 
-    async def sync_to_keitaro(self) -> dict[str, Any]:
-        """Push all pending offer binding changes to Keitaro flows.
-
-        Finds OFFER flows where Flow.synced=False or any FlowOffer.binding has synced=False.
-        For each pending flow, builds offers payload excluding deleted bindings, sends PUT request,
-        then confirms as synced exactly the bindings that were sent. Bindings edited while the
-        request was in flight stay pending and the flow is listed in ``flows_still_pending``.
-        Aggregates errors but continues processing.
-
-        Returns statistics: flows_checked, flows_synced count, flows_still_pending list,
-        errors list, success flag.
-
-        Args:
-            None (queries repository for dirty flows)
-
-        Returns:
-            Dictionary with sync progress and error tracking.
-        """
-        flows = await self.repository.get_flows_pending_sync()
-        result: dict[str, Any] = {
-            "flows_checked": len(flows),
-            "flows_synced": 0,
-            "flows_still_pending": [],
-            "errors": [],
-        }
-
-        for flow in flows:
-            # Snapshot of exactly what is sent, so only these values get confirmed.
-            pushed = {link.id: (link.share, link.state.value, link.deleted) for link in flow.offers}
-            offers = [
-                {
-                    "offer_id": link.offer.keitaro_id,
-                    "share": link.share,
-                    "state": link.state.value,
-                }
-                for link in flow.offers
-                if not link.deleted
-            ]
-            try:
-                await self.gateway.update_flow_offers(flow.keitaro_id, offers)
-                if await self.repository.mark_flow_synced(flow.id, pushed):
-                    result["flows_synced"] += 1
-                else:
-                    result["flows_still_pending"].append(flow.keitaro_id)
-            except Exception as exc:
-                result["errors"].append({"flow_id": flow.keitaro_id, "error": type(exc).__name__})
-
-        result["success"] = not result["errors"]
-        return result
-
     @staticmethod
     def _extract_flows(response: Any) -> list[dict[str, Any]]:
         """Extract flows/streams from various Keitaro API response formats.

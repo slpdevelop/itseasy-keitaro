@@ -1,11 +1,22 @@
 import secrets
 import string
 from datetime import datetime
-from typing import Literal, LiteralString
+from typing import Any, Literal, LiteralString
 from uuid import UUID
 
 from app.schemas.base import Base
-from pydantic import AliasPath, BaseModel, Field, field_validator
+from pydantic import (
+    AliasPath,
+    BaseModel,
+    Field,
+    field_validator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    computed_field,
+)
+from enum import StrEnum
+from typing import Annotated
 
 
 class KTCampaignCreateRequest(BaseModel):
@@ -161,3 +172,145 @@ class CampaignDetailResponse(Base):
     traffic_source_keitaro_id: int | None
     fetched_at: datetime | None
     flows: list[CampaignFlowDetailResponse]
+
+
+# keitaro_id: поправьте тип, если у вас str
+KeitaroFlowId = int
+
+
+class SyncErrorStage(StrEnum):
+    VALIDATION = "validation"  # не прошла проверка payload до отправки
+    PUSH = "push"  # упал вызов Keitaro, ничего не отправлено
+    MARK_SYNCED = "mark_synced"  # в Keitaro ушло, но отметка в БД не сохранилась
+
+
+class SyncError(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    flow_id: KeitaroFlowId
+    stage: SyncErrorStage
+    error: str = Field(description="Имя класса исключения")
+    message: Annotated[str, StringConstraints(max_length=500)] | None = Field(
+        default=None,
+        description="Обрезанное сообщение, без секретов и токенов",
+    )
+
+
+class SyncResult(BaseModel):
+    flows_checked: Annotated[int, Field(ge=0, description="Сколько флоу было в выборке")] = 0
+    flows_synced: Annotated[int, Field(ge=0, description="Полностью подтверждены")] = 0
+    flows_still_pending: Annotated[
+        list[KeitaroFlowId],
+        Field(default_factory=list, description="Уйдут на следующем проходе"),
+    ]
+    flows_not_found: Annotated[
+        list[KeitaroFlowId],
+        Field(default_factory=list, description="Флоу удалён между выборкой и подтверждением"),
+    ]
+    errors: Annotated[list[SyncError], Field(default_factory=list)]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def success(self) -> bool:
+        """Нет ошибок. Pending не считается ошибкой."""
+        return not self.errors
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def fully_synced(self) -> bool:
+        """Нет ни ошибок, ни хвостов: всё, что было, подтверждено."""
+        return not self.errors and not self.flows_still_pending and not self.flows_not_found
+
+    # --- хелперы, чтобы не раскидывать логику по sync_campaign ---
+
+    def add_error(
+        self,
+        flow_id: KeitaroFlowId,
+        stage: SyncErrorStage,
+        exc: BaseException,
+    ) -> None:
+        self.errors.append(
+            SyncError(
+                flow_id=flow_id,
+                stage=stage,
+                error=type(exc).__name__,
+                message=str(exc)[:500] or None,
+            )
+        )
+
+
+class OfferPayload(BaseModel):
+    """Один оффер в теле PUT-запроса в Keitaro."""
+
+    model_config = ConfigDict(frozen=True)
+
+    offer_id: int
+    share: int = Field(ge=0)
+    state: str
+
+
+class PushedLink(BaseModel):
+    """Значения binding на момент отправки. Подтверждаются только при точном совпадении."""
+
+    model_config = ConfigDict(frozen=True)
+
+    share: int
+    state: str
+    deleted: bool
+
+    @property
+    def fingerprint(self) -> tuple[int, str, bool]:
+        return (self.share, self.state, self.deleted)
+
+
+class FlowPush(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    flow_id: UUID
+    keitaro_id: int
+    offers: Annotated[
+        list[OfferPayload],
+        Field(default_factory=list, description="Тело PUT: только не удалённые bindings"),
+    ]
+    pushed: Annotated[
+        dict[UUID, PushedLink],
+        Field(
+            default_factory=dict,
+            description="Все загруженные bindings, включая tombstones: link.id -> значения",
+        ),
+    ]
+
+    @classmethod
+    def from_flow(cls, flow: Any) -> "FlowPush":
+        """Строить только внутри открытой сессии: читает flow.offers и link.offer."""
+        return cls(
+            flow_id=flow.id,
+            keitaro_id=flow.keitaro_id,
+            offers=[
+                OfferPayload(
+                    offer_id=link.offer.keitaro_id,
+                    share=link.share,
+                    state=link.state.value,
+                )
+                for link in flow.offers
+                if not link.deleted
+            ],
+            pushed={
+                link.id: PushedLink(
+                    share=link.share,
+                    state=link.state.value,
+                    deleted=link.deleted,
+                )
+                for link in flow.offers
+            },
+        )
+
+    @property
+    def offers_payload(self) -> list[dict[str, Any]]:
+        """Формат, который ждёт gateway.update_flow_offers."""
+        return [offer.model_dump() for offer in self.offers]
+
+    @property
+    def pushed_fingerprints(self) -> dict[UUID, tuple[int, str, bool]]:
+        """Формат, который ждёт CampaignRepository.mark_flow_synced."""
+        return {link_id: link.fingerprint for link_id, link in self.pushed.items()}

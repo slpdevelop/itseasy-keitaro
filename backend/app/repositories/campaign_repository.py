@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
+from uuid import UUID
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
-from app.core.exceptions import CampaignCreationError
+from app.core.exceptions import CampaignCreationError, FlowNotFoundError
 from sqlalchemy.sql.selectable import Select
 
 
@@ -114,18 +115,15 @@ class CampaignRepository:
         Returns:
             Full Campaign entity with flows and offers loaded, or None if not found.
         """
-        async with self._session_factory() as session:
-            query: Select[tuple[Campaign]] = (
-                select(Campaign)
-                .where(Campaign.keitaro_id == keitaro_id)
-                .options(
-                    selectinload(Campaign.flows)
-                    .selectinload(Flow.offers)
-                    .selectinload(FlowOffer.offer)
-                )
+        query: Select[tuple[Campaign]] = (
+            select(Campaign)
+            .where(Campaign.keitaro_id == keitaro_id)
+            .options(
+                selectinload(Campaign.flows).selectinload(Flow.offers).selectinload(FlowOffer.offer)
             )
-            result = await session.execute(query)
-            return result.scalar_one_or_none()
+        )
+        result = await self._session.execute(query)
+        return result.scalar_one_or_none()
 
     async def get_local_campaign_streams(self) -> list[dict[str, Any]]:
         """Get tracked campaigns with their active flow IDs for sync operations.
@@ -140,24 +138,23 @@ class CampaignRepository:
         Returns:
             List of dicts with keitaro_id and array of active flow objects (id, keitaro_id).
         """
-        async with self._session_factory() as session:
-            query = (
-                select(Campaign)
-                .where(Campaign.deleted.is_(False))
-                .options(selectinload(Campaign.flows))
-            )
-            campaigns = (await session.execute(query)).scalars().unique().all()
-            return [
-                {
-                    "keitaro_id": campaign.keitaro_id,
-                    "flows": [
-                        {"id": flow.id, "keitaro_id": flow.keitaro_id}
-                        for flow in campaign.flows
-                        if not flow.deleted
-                    ],
-                }
-                for campaign in campaigns
-            ]
+        query = (
+            select(Campaign)
+            .where(Campaign.deleted.is_(False))
+            .options(selectinload(Campaign.flows))
+        )
+        campaigns = (await self._session.execute(query)).scalars().unique().all()
+        return [
+            {
+                "keitaro_id": campaign.keitaro_id,
+                "flows": [
+                    {"id": flow.id, "keitaro_id": flow.keitaro_id}
+                    for flow in campaign.flows
+                    if not flow.deleted
+                ],
+            }
+            for campaign in campaigns
+        ]
 
     async def sync_flow_offers_from_keitaro(
         self,
@@ -190,79 +187,78 @@ class CampaignRepository:
             True if flow was found and bindings were updated; False if not found.
         """
         now = datetime.now(timezone.utc)
-        async with self._session_factory() as session, session.begin():
-            flow = await self._get_by_keitaro_id(session, Flow, flow_keitaro_id)
-            if flow is None:
-                return False
+        flow = await self._get_by_keitaro_id(self._session, Flow, flow_keitaro_id)
+        if flow is None:
+            return False
 
-            offer_ids = [int(item["offer_id"]) for item in items]
-            offers = []
-            if offer_ids:
-                offers = (
-                    (await session.execute(select(Offer).where(Offer.keitaro_id.in_(offer_ids))))
-                    .scalars()
-                    .all()
-                )
-            offers_by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
-            offer_names = offer_names or {}
-
-            # Create records for unknown offers, using the real Keitaro name
-            # whenever the service was able to resolve it.
-            for missing_id in sorted(set(offer_ids) - offers_by_keitaro_id.keys()):
-                name = offer_names.get(missing_id) or f"Offer {missing_id}"
-                offer = Offer(keitaro_id=missing_id, name=name, synced=True)
-                session.add(offer)
-                offers_by_keitaro_id[missing_id] = offer
-
-            # Earlier versions could have stored placeholder names. Replace those
-            # with the current name returned by Keitaro.
-            for keitaro_id, name in offer_names.items():
-                offer = offers_by_keitaro_id.get(keitaro_id)
-                if offer is not None and name.strip():
-                    offer.name = name.strip()
-            if offer_ids:
-                await session.flush()
-
-            existing_links = (
-                (
-                    await session.execute(
-                        select(FlowOffer)
-                        .options(selectinload(FlowOffer.offer))
-                        .where(FlowOffer.flow_id == flow.id)
-                    )
-                )
+        offer_ids = [int(item["offer_id"]) for item in items]
+        offers = []
+        if offer_ids:
+            offers = (
+                (await self._session.execute(select(Offer).where(Offer.keitaro_id.in_(offer_ids))))
                 .scalars()
                 .all()
             )
-            links_by_offer_id = {link.offer_id: link for link in existing_links}
-            remote_offer_ids: set[Any] = set()
-            conflicts = conflicts if conflicts is not None else []
+        offers_by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
+        offer_names = offer_names or {}
 
-            for item in items:
-                offer = offers_by_keitaro_id[int(item["offer_id"])]
-                remote_offer_ids.add(offer.id)
-                remote_share = int(item["share"])
-                remote_state = FlowOfferState(item.get("state") or FlowOfferState.ACTIVE.value)
-                link = links_by_offer_id.get(offer.id)
-                if link is None:
-                    link = FlowOffer(flow_id=flow.id, offer_id=offer.id)
-                    session.add(link)
-                    links_by_offer_id[offer.id] = link
-                elif link.synced is False:
-                    # Unpushed local edit: do not overwrite it with the remote copy.
-                    if (link.deleted, link.share, link.state) == (
-                        False,
-                        remote_share,
-                        remote_state,
-                    ):
-                        link.synced = True  # local edit equals the remote state
-                    else:
-                        conflicts.append(offer.keitaro_id)
-                    continue
-                link.share = remote_share
-                link.state = remote_state
-                link.synced = True
-                link.deleted = False
+        # Create records for unknown offers, using the real Keitaro name
+        # whenever the service was able to resolve it.
+        for missing_id in sorted(set(offer_ids) - offers_by_keitaro_id.keys()):
+            name = offer_names.get(missing_id) or f"Offer {missing_id}"
+            offer = Offer(keitaro_id=missing_id, name=name, synced=True)
+            self._session.add(offer)
+            offers_by_keitaro_id[missing_id] = offer
+
+        # Earlier versions could have stored placeholder names. Replace those
+        # with the current name returned by Keitaro.
+        for keitaro_id, name in offer_names.items():
+            offer = offers_by_keitaro_id.get(keitaro_id)
+            if offer is not None and name.strip():
+                offer.name = name.strip()
+        if offer_ids:
+            await self._session.flush()
+
+        existing_links = (
+            (
+                await self._session.execute(
+                    select(FlowOffer)
+                    .options(selectinload(FlowOffer.offer))
+                    .where(FlowOffer.flow_id == flow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        links_by_offer_id = {link.offer_id: link for link in existing_links}
+        remote_offer_ids: set[Any] = set()
+        conflicts = conflicts if conflicts is not None else []
+
+        for item in items:
+            offer = offers_by_keitaro_id[int(item["offer_id"])]
+            remote_offer_ids.add(offer.id)
+            remote_share = int(item["share"])
+            remote_state = FlowOfferState(item.get("state") or FlowOfferState.ACTIVE.value)
+            link = links_by_offer_id.get(offer.id)
+            if link is None:
+                link = FlowOffer(flow_id=flow.id, offer_id=offer.id)
+                self._session.add(link)
+                links_by_offer_id[offer.id] = link
+            elif link.synced is False:
+                # Unpushed local edit: do not overwrite it with the remote copy.
+                if (link.deleted, link.share, link.state) == (
+                    False,
+                    remote_share,
+                    remote_state,
+                ):
+                    link.synced = True  # local edit equals the remote state
+                else:
+                    conflicts.append(offer.keitaro_id)
+                continue
+            link.share = remote_share
+            link.state = remote_state
+            link.synced = True
+            link.deleted = False
 
             # Keep bindings that disappeared from Keitaro, but mark them as deleted.
             # This mirrors UI deletion: the relation remains in the database and can
@@ -286,7 +282,7 @@ class CampaignRepository:
             # The flow stays "pending" while any of its bindings still has local edits.
             flow.synced = not any(link.synced is False for link in links_by_offer_id.values())
             flow.fetched_at = now
-            await session.flush()
+            await self._session.flush()
             return True
 
     async def update_flow_offers(self, flow_id, items: list[dict[str, Any]]) -> Flow | None:
@@ -420,71 +416,66 @@ class CampaignRepository:
         Returns:
             List of Flow entities with nested offers loaded for payload building.
         """
-        async with self._session_factory() as session:
-            dirty_link = (
-                select(FlowOffer.id)
-                .where(
-                    FlowOffer.flow_id == Flow.id,
-                    FlowOffer.synced.is_(False),
-                )
-                .exists()
+        dirty_link = (
+            select(FlowOffer.id)
+            .where(
+                FlowOffer.flow_id == Flow.id,
+                FlowOffer.synced.is_(False),
             )
-            query = (
-                select(Flow)
-                .where(Flow.deleted.is_(False), Flow.type == FlowType.OFFER)
-                .where(or_(Flow.synced.is_(False), dirty_link))
-                .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
-                .order_by(Flow.keitaro_id)
-            )
-            return list((await session.execute(query)).scalars().unique().all())
+            .exists()
+        )
+        query = (
+            select(Flow)
+            .where(Flow.deleted.is_(False), Flow.type == FlowType.OFFER)
+            .where(or_(Flow.synced.is_(False), dirty_link))
+            .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
+            .order_by(Flow.keitaro_id)
+        )
+        return list((await self._session.execute(query)).scalars().unique().all())
 
     async def mark_flow_synced(
         self,
-        flow_id,
-        pushed: dict[Any, tuple[int, str, bool]] | None = None,
+        flow_id: UUID,
+        pushed: Mapping[UUID, tuple[int, str, bool]],
     ) -> bool:
-        """Mark a flow and its offer bindings as synced after a successful push.
+        """Confirm exactly the bindings that were pushed; True if flow is fully synced.
 
-        ``pushed`` is the snapshot that was actually sent to Keitaro:
-        ``{FlowOffer.id: (share, state_value, deleted)}``. A binding is confirmed as
-        synced only if it still has exactly these values. A binding edited (or created)
-        while the PUT request was in flight stays ``synced=False`` and is picked up by
-        the next push, instead of being marked as sent when it was not.
-
-        The flow is marked synced only when none of its bindings remained pending.
-        Without ``pushed`` every binding is confirmed (legacy behaviour).
-
-        Args:
-            flow_id: Local UUID of the flow that was pushed.
-            pushed: Snapshot of the pushed bindings, keyed by FlowOffer.id.
-
-        Returns:
-            True if the flow is fully synced after this call, False if some bindings
-            changed during the push and are still pending (or the flow no longer exists).
+        Soft-deleted bindings are confirmed like any other (deleted=True, synced=True)
+        and are excluded from subsequent loads by the pending filter.
         """
-        async with self._session_factory() as session, session.begin():
-            flow = await session.scalar(
-                select(Flow)
-                .where(Flow.id == flow_id)
-                .options(selectinload(Flow.offers))
-                .with_for_update(of=Flow)
+        flow = await self._session.scalar(
+            select(Flow)
+            .where(Flow.id == flow_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if flow is None:
+            raise FlowNotFoundError("Flow not found")
+
+        # Грузим только "живые" и ещё не подтверждённые tombstones.
+        links = (
+            await self._session.scalars(
+                select(FlowOffer)
+                .where(
+                    FlowOffer.flow_id == flow_id,
+                    or_(FlowOffer.deleted.is_(False), FlowOffer.synced.is_(False)),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
-            if flow is None:
-                return False
-            fully_synced = True
-            for link in flow.offers:
-                if pushed is not None and pushed.get(link.id) != (
-                    link.share,
-                    link.state.value,
-                    link.deleted,
-                ):
-                    link.synced = False
-                    fully_synced = False
-                else:
-                    link.synced = True
-            flow.synced = fully_synced
-            await session.flush()
-            return fully_synced
+        ).all()
+
+        fully_synced = True
+        for link in links:
+            if pushed.get(link.id) == (link.share, link.state.value, link.deleted):
+                link.synced = True
+            else:
+                link.synced = False
+                fully_synced = False
+
+        flow.synced = fully_synced
+        await self._session.flush()
+        return fully_synced
 
     # ------------------------------------------------------------------ helpers
 

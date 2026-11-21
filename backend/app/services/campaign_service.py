@@ -12,9 +12,12 @@ from app.models.models import Campaign, Flow, FlowOffer, Offer
 from app.repositories.flow_repository import FlowRepository
 from app.schemas.campaign import (
     CampaignCreatePayload,
+    FlowPush,
     KTCampaignCreateResponse,
     KTCampaignCreateRequest,
     CampaignDetailResponse,
+    SyncErrorStage,
+    SyncResult,
 )
 from app.repositories.campaign_repository import CampaignRepository
 from app.core.config import Settings
@@ -495,3 +498,41 @@ class CampaignService:
                 geo_flow=geo_flow,
                 offer_flow=offer_flow,
             )
+
+    async def sync_campaign(self) -> SyncResult:
+        # 1. Read phase
+        async with self.db_session() as session, session.begin():
+            flows: list[Flow] = await CampaignRepository(session).get_flows_pending_sync()
+            pending: list[FlowPush] = [FlowPush.from_flow(flow) for flow in flows]
+
+        result = SyncResult(flows_checked=len(pending))
+
+        for item in pending:
+            # 2. Network phase
+            try:
+                await self.gateway.update_flow_offers(item.keitaro_id, item.offers_payload)
+            except Exception as exc:
+                logger.exception("Keitaro push failed", extra={"keitaro_flow_id": item.keitaro_id})
+                result.add_error(item.keitaro_id, SyncErrorStage.PUSH, exc)
+                continue
+
+            # 3. Confirm phase
+            try:
+                async with self.db_session() as session, session.begin():
+                    confirmed = await CampaignRepository(session).mark_flow_synced(
+                        item.flow_id, item.pushed_fingerprints
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "Pushed to Keitaro but failed to mark synced",
+                    extra={"keitaro_flow_id": item.keitaro_id},
+                )
+                result.add_error(item.keitaro_id, SyncErrorStage.MARK_SYNCED, exc)
+                continue
+
+            if confirmed:
+                result.flows_synced += 1
+            else:
+                result.flows_still_pending.append(item.keitaro_id)
+
+        return result

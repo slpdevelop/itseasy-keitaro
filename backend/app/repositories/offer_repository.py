@@ -30,14 +30,14 @@ class OfferRepository:
         Args:
             session_factory: Async session maker configured with engine and settings.
         """
-        self.session = session
+        self._session = session
 
     async def get_map_by_keitaro_ids(self, keitaro_ids: list[int]) -> dict[int, Offer]:
         ids = set(keitaro_ids)
         if not ids:
             return {}
         stmt = select(Offer).where(Offer.keitaro_id.in_(ids))
-        offers = (await self.session.scalars(stmt)).all()
+        offers = (await self._session.scalars(stmt)).all()
         return {o.keitaro_id: o for o in offers}
 
     async def get_all(self, *, include_deleted: bool = False) -> list[Offer]:
@@ -53,18 +53,17 @@ class OfferRepository:
         Returns:
             List of Offer entities sorted by name ascending. Empty if none found.
         """
-        async with self._session_factory() as session:
-            statement = select(Offer).order_by(Offer.name)
-            if not include_deleted:
-                statement = statement.where(Offer.deleted.is_(False))
-            result = await session.execute(statement)
-            return list(result.scalars().all())
+        statement = select(Offer).order_by(Offer.name)
+        if not include_deleted:
+            statement = statement.where(Offer.deleted.is_(False))
+        result = await self._session.execute(statement)
+        return list(result.scalars().all())
 
     async def get_missing_keitaro_ids(self, keitaro_ids: set[int]) -> set[int]:
         if not keitaro_ids:
             return set()
         query = select(Offer.keitaro_id).where(Offer.keitaro_id.in_(keitaro_ids))
-        existing = set(await self._session_factory.scalars(query))
+        existing = set(await self._session.scalars(query))
         return keitaro_ids - existing
 
     async def get_by_id(self, offer_id: UUID) -> Offer | None:
@@ -79,9 +78,8 @@ class OfferRepository:
         Returns:
             Offer entity if found, None otherwise.
         """
-        async with self._session_factory() as session:
-            result = await session.execute(select(Offer).where(Offer.id == offer_id))
-            return result.scalar_one_or_none()
+        result = await self._session.execute(select(Offer).where(Offer.id == offer_id))
+        return result.scalar_one_or_none()
 
     async def get_by_keitaro_id(self, keitaro_id: int) -> Offer | None:
         """Fetch a single offer by its external Keitaro numeric ID.
@@ -95,9 +93,8 @@ class OfferRepository:
         Returns:
             Offer entity if found locally, None otherwise (offer may not be imported yet).
         """
-        async with self._session_factory() as session:
-            result = await session.execute(select(Offer).where(Offer.keitaro_id == keitaro_id))
-            return result.scalar_one_or_none()
+        result = await self._session.execute(select(Offer).where(Offer.keitaro_id == keitaro_id))
+        return result.scalar_one_or_none()
 
     async def create(self, *, keitaro_id: int, name: str, synced: bool = False) -> Offer:
         """Create a new offer record in the local database.
@@ -120,9 +117,9 @@ class OfferRepository:
             synced=synced,
             deleted=False,
         )
-        self.session.add(offer)
-        await self.session.flush()
-        await self.session.refresh(offer)
+        self._session.add(offer)
+        await self._session.flush()
+        await self._session.refresh(offer)
         return offer
 
     async def bulk_create(self, offers: list[dict], *, synced=True, fetched_at=None) -> list[Offer]:
@@ -137,8 +134,8 @@ class OfferRepository:
             for o in offers
         ]
 
-        self.session.add_all(new_offers)
-        await self.session.flush()
+        self._session.add_all(new_offers)
+        await self._session.flush()
         return new_offers
 
     async def set_deleted(
@@ -159,18 +156,17 @@ class OfferRepository:
         Returns:
             Updated Offer entity with new deleted and synced values, or None if not found.
         """
-        async with self._session_factory() as session, session.begin():
-            result = await session.execute(
-                select(Offer).where(Offer.id == offer_id).with_for_update()
-            )
-            offer = result.scalar_one_or_none()
-            if offer is None:
-                return None
+        result = await self._session.execute(
+            select(Offer).where(Offer.id == offer_id).with_for_update()
+        )
+        offer = result.scalar_one_or_none()
+        if offer is None:
+            return None
 
-            offer.deleted = deleted
-            if not deleted:
-                offer.synced = False if synced is None else synced
+        offer.deleted = deleted
+        if not deleted:
+            offer.synced = False if synced is None else synced
 
-            await session.flush()
-            await session.refresh(offer)
-            return offer
+        await self._session.flush()
+        await self._session.refresh(offer)
+        return offer
