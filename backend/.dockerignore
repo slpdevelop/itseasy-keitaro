@@ -12,6 +12,5 @@ coverage_html/
 .coverage
 *.db
 app/tests/
-docker-compose.yml
 Dockerfile
 .dockerignore

@@ -1,1 +1,11 @@
-Generic single-database configuration.
+Миграции базы данных (Alembic, одна база).
+
+DSN берётся из настроек приложения (POSTGRES_DB_URL), см. env.py.
+В Docker миграции применяются автоматически при старте контейнера app.
+
+Команды запускаются из каталога backend/ (локально) или через
+`docker compose exec app ...` из корня репозитория:
+
+    alembic upgrade head
+    alembic current
+    alembic revision --autogenerate -m "describe change"
