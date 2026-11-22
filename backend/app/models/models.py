@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    JSON,
     UniqueConstraint,
     func,
 )
@@ -44,7 +45,7 @@ class Base(DeclarativeBase):
     """
 
 
-class BaseModel(Base):
+class TimestampedModel(Base):
     """Base mixin with common database columns and sync tracking.
 
     All local entities inherit these fields: unique UUID primary key,
@@ -89,7 +90,7 @@ class KeitaroEntityMixin:
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class Campaign(KeitaroEntityMixin, BaseModel):
+class Campaign(KeitaroEntityMixin, TimestampedModel):
     """Local representation of a Keitaro campaign entity.
 
     Stores campaign metadata including name, associated group/domain/traffic source,
@@ -127,7 +128,7 @@ class FlowType(enum.Enum):
 # pylint: disable=unsubscriptable-object
 
 
-class Flow(KeitaroEntityMixin, BaseModel):
+class Flow(KeitaroEntityMixin, TimestampedModel):
     """Represents a campaign stream/flow in Keitaro.
 
     Each campaign has multiple flows: one GEO flow for country targeting and
@@ -170,7 +171,7 @@ class Flow(KeitaroEntityMixin, BaseModel):
     )
 
 
-class Offer(KeitaroEntityMixin, BaseModel):
+class Offer(KeitaroEntityMixin, TimestampedModel):
     """Local representation of a Keitaro offer entity.
 
     Stores metadata for offers available in the Keitaro system. These are not
@@ -201,7 +202,7 @@ class FlowOfferState(enum.Enum):
     DISABLED = "disabled"
 
 
-class FlowOffer(BaseModel):
+class FlowOffer(TimestampedModel):
     """Represents an offer binding to a specific flow.
 
     This is the central entity for traffic distribution: it links a Flow
@@ -237,3 +238,22 @@ class FlowOffer(BaseModel):
 
     flow: Mapped["Flow"] = relationship(back_populates="offers")
     offer: Mapped["Offer"] = relationship()
+
+
+
+class CampaignCreationOperation(Base):
+    """Persistent idempotency/checkpoint state for multi-step campaign creation."""
+
+    __tablename__ = "campaign_creation_operations"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    owner_token: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    steps: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True
+    )

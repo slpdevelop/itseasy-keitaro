@@ -22,7 +22,7 @@ class FlowFilter(BaseModel):
     payload: list[str]
 
 
-class FlowOffer(BaseModel):
+class FlowOfferCreate(BaseModel):
     """Offer binding within a flow's traffic distribution.
 
     Represents how much traffic share (percentage) an offer receives
@@ -59,7 +59,7 @@ class FlowCreate(BaseModel):
     collect_clicks: bool = True
 
     filters: list[FlowFilter] | None = None
-    offers: list[FlowOffer] | None = None
+    offers: list[FlowOfferCreate] | None = None
 
 
 class FlowOfferUpdate(BaseModel):
@@ -192,3 +192,19 @@ class RemoteFlow(BaseModel):
     def default_offers(cls, value: object) -> object:
         """Treat null offers as an empty list."""
         return value or []
+
+
+
+class FlowOfferUpdateResult(BaseModel):
+    offer_id: int
+    share: int
+    pinned: bool
+    state: Literal["active", "disabled"]
+    deleted: bool
+    synced: bool
+
+
+class FlowOffersUpdateResponse(BaseModel):
+    success: bool
+    flow_id: str
+    offers: list[FlowOfferUpdateResult]

@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, LiteralString, Self
 from uuid import UUID
 
 from app.schemas.base import Base
+from app.core.exceptions import AppError
 from pydantic import (
     AliasPath,
     BaseModel,
@@ -16,6 +17,16 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+
+
+
+class RemoteCampaignSummary(BaseModel):
+    """Public subset of a Keitaro campaign used by the campaign picker."""
+    id: int = Field(gt=0)
+    name: str
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class KTCampaignCreateRequest(BaseModel):
@@ -284,6 +295,7 @@ class SyncErrorStage(StrEnum):
 
     VALIDATION = "validation"  # payload validation failed before sending
     PUSH = "push"  # Keitaro call failed, nothing sent
+    CONFLICT = "conflict"  # Keitaro changed since the last local fetch
     MARK_SYNCED = "mark_synced"  # sent to Keitaro but DB mark not saved
 
 
@@ -365,7 +377,10 @@ class SyncResult(BaseModel):
                 flow_id=flow_id,
                 stage=stage,
                 error=type(exc).__name__,
-                message=str(exc)[:500] or None,
+                message=(
+                    exc.public_message if isinstance(exc, AppError)
+                    else "Unexpected synchronization error"
+                ),
             )
         )
 
@@ -423,6 +438,7 @@ class FlowPush(BaseModel):
 
     flow_id: UUID
     keitaro_id: int
+    campaign_keitaro_id: int
     offers: Annotated[
         list[OfferPayload],
         Field(default_factory=list, description="PUT body: only non-deleted bindings"),
@@ -447,8 +463,11 @@ class FlowPush(BaseModel):
         Raises:
             ValueError: If offers are non-empty and shares do not total 100.
         """
-        if self.offers and sum(offer.share for offer in self.offers) != 100:
-            raise ValueError("Offer shares of a flow must total exactly 100")
+        active_shares = [offer.share for offer in self.offers if offer.state == "active"]
+        if active_shares and sum(active_shares) != 100:
+            raise ValueError("Active offer shares of a flow must total exactly 100")
+        if any(offer.share != 0 for offer in self.offers if offer.state == "disabled"):
+            raise ValueError("Disabled offers must have a zero traffic share")
         return self
 
     @classmethod
@@ -467,10 +486,11 @@ class FlowPush(BaseModel):
         return cls(
             flow_id=flow.id,
             keitaro_id=flow.keitaro_id,
+            campaign_keitaro_id=flow.campaign.keitaro_id,
             offers=[
                 OfferPayload(
                     offer_id=link.offer.keitaro_id,
-                    share=link.share,
+                    share=link.share if link.state.value == "active" else 0,
                     state=link.state.value,
                 )
                 for link in flow.offers

@@ -1,80 +1,163 @@
-"""Disk checkpoints that let a multi-step operation resume after a failure."""
+"""PostgreSQL-backed idempotency checkpoints for campaign creation."""
 
-import json
+from __future__ import annotations
+
 import logging
-import os
-import tempfile
+from datetime import datetime, timedelta, timezone
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-logger: logging.Logger = logging.getLogger(__name__)
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.core.exceptions import OperationInProgressError
+from app.models.models import CampaignCreationOperation
+
+logger = logging.getLogger(__name__)
 
 
 class Checkpoint:
-    """Remember the result of every completed step of one operation.
+    """Persist each completed orchestration step in PostgreSQL.
 
-    If a later step fails, the next identical request skips the steps that already
-    succeeded instead of repeating them (for example, creating the same campaign in
-    Keitaro twice). Call ``clear()`` after the last step so the same request can be
-    run again from scratch.
-
-    Limitations (acceptable for a single-instance deployment): the state lives in one
-    JSON file, there is no locking, and the file is not shared between machines.
-
-    Attributes:
-        path: JSON file with the saved step results.
-        key: Identifies the operation. It must include everything that defines the
-            request (name, country, offers), otherwise a different request would
-            reuse stale results.
+    A unique operation key prevents concurrent duplicate requests. Failed requests
+    can resume; stale leases are recoverable after one hour. Completed keys are
+    retained for 24 hours to make client retries idempotent.
     """
 
-    DEFAULT_PATH = Path(tempfile.gettempdir()) / "campaign_checkpoint.json"
+    LEASE_TTL = timedelta(hours=1)
+    RESULT_TTL = timedelta(hours=24)
 
-    def __init__(self, key: str, path: Path | str | None = None) -> None:
-        self.path: Path = Path(path) if path else self.DEFAULT_PATH
-        self.key: str = key
+    def __init__(
+        self,
+        key: str,
+        request_hash: str,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self.key = key
+        self.request_hash = request_hash
+        self.session_factory = session_factory
+        self.owner_token = str(uuid4())
 
-    def _read(self) -> dict:
-        return json.loads(self.path.read_text("utf-8")) if self.path.exists() else {}
+    async def acquire(self) -> bool:
+        """Claim an operation; return False when its completed result is reusable."""
+        now = datetime.now(timezone.utc)
+        async with self.session_factory() as session, session.begin():
+            await session.execute(
+                delete(CampaignCreationOperation).where(
+                    (
+                        (CampaignCreationOperation.status == "completed")
+                        & (CampaignCreationOperation.updated_at < now - self.RESULT_TTL)
+                    )
+                    | (
+                        (CampaignCreationOperation.status == "failed")
+                        & (CampaignCreationOperation.updated_at < now - timedelta(days=7))
+                    )
+                )
+            )
+            await session.execute(
+                insert(CampaignCreationOperation)
+                .values(
+                    key=self.key,
+                    request_hash=self.request_hash,
+                    owner_token=self.owner_token,
+                    status="running",
+                    steps={},
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_nothing(index_elements=[CampaignCreationOperation.key])
+            )
+            operation = await session.scalar(
+                select(CampaignCreationOperation)
+                .where(CampaignCreationOperation.key == self.key)
+                .with_for_update()
+            )
+            assert operation is not None
 
-    def _write(self, data: dict) -> None:
-        """Write atomically: dump to a temp file, then rename it over the original."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp: Path = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-        os.replace(tmp, self.path)
+            if operation.owner_token == self.owner_token:
+                return True
+
+            age = now - operation.updated_at
+            if operation.request_hash != self.request_hash:
+                if operation.status == "running" and age < self.LEASE_TTL:
+                    raise OperationInProgressError(
+                        "A campaign with this name is being created with different parameters"
+                    )
+                if operation.status == "failed" or (
+                    operation.status == "running" and age >= self.LEASE_TTL
+                ):
+                    raise OperationInProgressError(
+                        "A previous incomplete campaign creation uses this name; retry its original request first"
+                    )
+            elif operation.status == "completed" and age < self.RESULT_TTL:
+                return False
+            elif operation.status == "running" and age < self.LEASE_TTL:
+                raise OperationInProgressError()
+
+            was_completed = operation.status == "completed"
+            operation.request_hash = self.request_hash
+            operation.owner_token = self.owner_token
+            operation.status = "running"
+            if was_completed:
+                operation.steps = {}
+            operation.updated_at = now
+            return True
 
     async def run(self, step: str, fn: Callable[[], Awaitable[Any]]) -> Any:
-        """Run a step unless it already succeeded, and save its result.
-
-        Args:
-            step: Step name, unique within the key.
-            fn: Async callable that performs the step.
-
-        Returns:
-            The saved result if the step was already completed, otherwise the new one.
-
-        Raises:
-            Any exception raised by ``fn``; nothing is saved in that case.
-        """
-        done = self._read().get(self.key, {})
-        if step in done:
-            return done[step]
+        """Return a persisted step result or execute and persist the step."""
+        async with self.session_factory() as session:
+            operation = await session.get(CampaignCreationOperation, self.key)
+            if operation is None or operation.owner_token != self.owner_token:
+                raise OperationInProgressError()
+            if step in operation.steps:
+                return operation.steps[step]
 
         try:
             result = await fn()
         except Exception:
-            logger.warning("Step %r failed for %r; next request resumes from it", step, self.key)
+            logger.exception("Campaign creation step %s failed", step)
             raise
 
-        data: dict = self._read()
-        data.setdefault(self.key, {})[step] = result
-        self._write(data)
+        async with self.session_factory() as session, session.begin():
+            operation = await session.scalar(
+                select(CampaignCreationOperation)
+                .where(
+                    CampaignCreationOperation.key == self.key,
+                    CampaignCreationOperation.owner_token == self.owner_token,
+                )
+                .with_for_update()
+            )
+            if operation is None:
+                raise OperationInProgressError()
+            operation.steps = {**operation.steps, step: result}
+            operation.updated_at = datetime.now(timezone.utc)
         return result
 
-    def clear(self) -> None:
-        """Forget all saved steps of this operation."""
-        data: dict = self._read()
-        if data.pop(self.key, None) is not None:
-            self._write(data)
+    async def get_step(self, step: str) -> Any:
+        async with self.session_factory() as session:
+            operation = await session.get(CampaignCreationOperation, self.key)
+            return operation.steps.get(step) if operation else None
+
+    async def complete(self) -> None:
+        async with self.session_factory() as session, session.begin():
+            await session.execute(
+                update(CampaignCreationOperation)
+                .where(
+                    CampaignCreationOperation.key == self.key,
+                    CampaignCreationOperation.owner_token == self.owner_token,
+                )
+                .values(status="completed", updated_at=datetime.now(timezone.utc))
+            )
+
+    async def fail(self) -> None:
+        async with self.session_factory() as session, session.begin():
+            await session.execute(
+                update(CampaignCreationOperation)
+                .where(
+                    CampaignCreationOperation.key == self.key,
+                    CampaignCreationOperation.owner_token == self.owner_token,
+                )
+                .values(status="failed", updated_at=datetime.now(timezone.utc))
+            )

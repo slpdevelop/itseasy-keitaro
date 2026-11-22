@@ -4,7 +4,7 @@ FastAPI backend for managing Keitaro campaigns.
 
 ## Requirements
 
-- Python 3.13+
+- Python 3.11+
 - pip (package manager)
 
 ## Installation
@@ -12,10 +12,10 @@ FastAPI backend for managing Keitaro campaigns.
 ```bash
 cd backend
 python -m venv .venv
-.\venv\Scripts\Activate.ps1  # Windows
+.\.venv\Scripts\Activate.ps1  # Windows
 source .venv/bin/activate    # Unix
 
-pip install -e ".[dev,test]"
+pip install -e ".[dev]"
 ```
 
 ## Configuration
@@ -32,10 +32,10 @@ Files `.env`, `.env.*` and `backend/.env*` are excluded from Git via `.gitignore
 
 ### Required environment variables:
 
-- `APP_NAME` — application name
-- `KEITARO_BASE_URL` — Keitaro API URL
-
-For development, Keitaro API token is not required. For production, configure `KEITARO_API_TOKEN`.
+- `KEITARO_BASE_URL` — Keitaro Admin API URL
+- `KEITARO_API_TOKEN` — Keitaro API token (required in every environment)
+- `POSTGRES_DB_URL` — async PostgreSQL DSN
+- `POSTGRES_PASSWORD` — PostgreSQL container password when using Compose
 
 ## Running with Docker (recommended)
 
@@ -44,6 +44,7 @@ The entire stack (PostgreSQL + FastAPI backend + React frontend) starts with one
 ```bash
 cd backend
 docker compose up -d --build   # build images and start DB + backend + frontend
+# ENV=production in backend/.env disables reload and builds the static frontend
 docker compose ps              # all three services should be healthy
 docker compose logs -f app     # backend logs
 docker compose logs -f frontend
@@ -62,9 +63,10 @@ docker compose down            # stop (database data persists in volume)
 
 ```bash
 cd backend
-docker compose up -d           # only PostgreSQL
+docker compose up -d postgres  # only PostgreSQL
 
 # In activated venv
+alembic upgrade head
 uvicorn app.asgi:app --reload --port 8000
 ```
 
@@ -82,26 +84,21 @@ docker compose ps        # status (healthy)
 docker compose down      # stop (data persists in volume)
 ```
 
-Settings are read from `backend/.env`: `USE_POSTGRESQL=True` and `POSTGRES_*`
-(`POSTGRES_PASSWORD` is required and must match the container password).
+Settings are read from `backend/.env`. `POSTGRES_DB_URL` must point to the
+PostgreSQL service; `POSTGRES_PASSWORD` must match the container password.
 
 On application startup in `lifespan`:
 
-- database is created (if it does not exist yet);
-- connection is established and verified (`SELECT 1`);
-- if the database is unavailable, startup fails (retries until the container starts);
+- the SQLAlchemy engine and session factory are initialized;
+- Compose applies Alembic migrations before starting Uvicorn;
+- `/health` executes `SELECT 1` and returns 503 when PostgreSQL is unavailable;
 - on application shutdown, the connection is closed properly.
 
-If `USE_POSTGRESQL=False`, no database connection is established.
+The backend requires PostgreSQL.
 
-## Testing
+## Tests
 
-```bash
-# In activated venv
-pytest app/tests/ -v --cov=app --cov-report=html
-```
-
-Test coverage: **86% and above**.
+Automated tests are not included in this delivery archive.
 
 ## Project structure
 
@@ -112,14 +109,11 @@ backend/
 │   ├── api/                 # Routes
 │   ├── core/                # Configuration, database, exceptions
 │   ├── integrations/        # Keitaro adapters
-│   ├── interfaces/          # Protocol contracts for gateways
 │   ├── repositories/        # SQLAlchemy repositories
 │   ├── schemas/             # Pydantic schemas
 │   ├── services/            # Business services
-│   └── tests/               # Tests
 ├── alembic/                 # Database migrations
 ├── .env.example             # Configuration example (copy to .env)
-├── .env                     # Your secrets (do not commit!)
 ├── .dockerignore
 ├── Dockerfile               # Backend image
 ├── alembic.ini
@@ -131,7 +125,6 @@ backend/
 frontend/
 ├── src/                     # React + Vite sources
 ├── index.html
-├── .env                     # VITE_API_BASE_URL
 ├── .dockerignore
 ├── Dockerfile               # Vite build + served via nginx
 ├── nginx.conf               # Proxies /api to backend, SPA fallback
@@ -139,16 +132,11 @@ frontend/
 └── README.md
 ```
 
-## Development plan
+## Synchronization and consistency
 
-See [`PLAN.md`](../PLAN.md) for implementation details:
-
-- **Stage 0:** Repository analysis ✅
-- **Stage 1:** Python environment ✅
-- **Stage 2:** FastAPI scaffold ✅
-- **Stage 3:** Configuration and security ✅
-- **Stage 4+:** In development
-
-## License
-
-[ICVR license](../ICVR_LICENSE)
+- Campaign creation validates the requested offer IDs before creating upstream resources.
+- Creation checkpoints and idempotency state are stored in PostgreSQL for 24-hour replay protection.
+- `sync` checks the remote flow state before pushing and reports conflicts as HTTP 207 with per-flow details.
+- Local edits are staged in PostgreSQL; `POST /campaigns/{id}/sync` pushes them to Keitaro.
+- Only non-deleted ACTIVE offers participate in the 100% allocation; DISABLED offers are retained with zero share.
+- A sync preflight compares the current remote stream with the local snapshot. If they differ, the flow is not overwritten and the client must fetch/reconcile first.

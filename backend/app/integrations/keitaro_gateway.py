@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 import httpx
 
-from app.core.exceptions import KeitaroError, KeitaroNotFoundError, KeitaroTimeoutError
+from app.core.exceptions import KeitaroClientError, KeitaroError, KeitaroNotFoundError, KeitaroTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -40,44 +41,42 @@ class KeitaroGateway:
         self.client = client
 
     async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        """Execute an HTTP request to the Keitaro API.
+        """Execute an upstream request; retry transient GET failures only."""
+        attempts = 3 if method.upper() == "GET" else 1
+        for attempt in range(attempts):
+            try:
+                response = await self.client.request(method, path, **kwargs)
+            except httpx.TimeoutException as exc:
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.2 * (2 ** attempt))
+                    continue
+                raise KeitaroTimeoutError() from exc
+            except httpx.RequestError as exc:
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.2 * (2 ** attempt))
+                    continue
+                raise KeitaroError() from exc
 
-        Central entry point for all API communication. Handles exceptions,
-        status codes, and response parsing uniformly across GET/POST/PUT/DELETE.
+            if response.is_error:
+                logger.warning(
+                    "Keitaro %s %s returned HTTP %s", method, path, response.status_code
+                )
+                if response.status_code == 404:
+                    raise KeitaroNotFoundError()
+                if 400 <= response.status_code < 500:
+                    raise KeitaroClientError(response.status_code)
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.2 * (2 ** attempt))
+                    continue
+                raise KeitaroError()
 
-        Args:
-            method: HTTP method string ("GET", "POST", "PUT", "DELETE").
-            path: API endpoint path (e.g., "/campaigns/123/streams").
-            **kwargs: Additional arguments passed to httpx.request (json, params, etc.).
-
-        Returns:
-            Parsed JSON response data or None for 204/empty responses.
-
-        Raises:
-            KeitaroNotFoundError: When Keitaro answers 404.
-            KeitaroError: For other non-2xx responses (401/403/5xx) and network errors.
-            KeitaroTimeoutError: When request exceeds configured timeout.
-            ValueError wrapper in KeitaroError: On invalid JSON response.
-        """
-        try:
-            response = await self.client.request(method, path, **kwargs)
-        except httpx.TimeoutException as exc:
-            raise KeitaroTimeoutError() from exc
-        except httpx.RequestError as exc:
-            raise KeitaroError() from exc
-
-        if response.is_error:
-            logger.warning("Keitaro %s %s returned HTTP %s", method, path, response.status_code)
-            if response.status_code == 404:
-                raise KeitaroNotFoundError()
-            raise KeitaroError()
-
-        if response.status_code == 204 or not response.content:
-            return None
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise KeitaroError("Keitaro returned a non-JSON success response") from exc
+            if response.status_code == 204 or not response.content:
+                return None
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise KeitaroError("Keitaro returned a non-JSON success response") from exc
+        raise KeitaroError()
 
     async def get(self, path: str, **kwargs: Any) -> Any:
         """Execute GET request to Keitaro API.

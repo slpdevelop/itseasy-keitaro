@@ -49,6 +49,14 @@ class InvalidRequestError(AppError):
     public_message = "Request data is invalid"
 
 
+class OperationInProgressError(AppError):
+    """An identical idempotent operation is currently being executed."""
+
+    status_code = 409
+    code = "OPERATION_IN_PROGRESS"
+    public_message = "An identical campaign creation request is already in progress"
+
+
 class KeitaroError(AppError):
     """Raised when Keitaro API fails or returns unexpected response.
 
@@ -63,6 +71,14 @@ class KeitaroError(AppError):
     status_code = 502
     code = "KEITARO_ERROR"
     public_message = "Keitaro API request failed"
+
+
+class KeitaroClientError(KeitaroError):
+    """Non-404 upstream 4xx response; status is retained for diagnostics."""
+
+    def __init__(self, upstream_status: int) -> None:
+        super().__init__()
+        self.upstream_status = upstream_status
 
 
 class KeitaroNotFoundError(KeitaroError):

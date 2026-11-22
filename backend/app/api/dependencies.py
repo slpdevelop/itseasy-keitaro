@@ -1,11 +1,9 @@
 from typing import Annotated
 
-import httpx
 from fastapi import Depends, Request
 
 from app.integrations.keitaro_api import KeitaroAPI
-from app.core.config import Settings, get_settings
-from app.integrations.keitaro_gateway import KeitaroGateway
+from app.core.config import Settings
 from app.services.service import Service
 
 
@@ -18,16 +16,22 @@ def get_keitaro_api(request: Request) -> KeitaroAPI:
     Returns:
         KeitaroAPI that reuses the application-wide httpx client.
     """
-    client: httpx.AsyncClient = request.app.state.http_client
-    gateway = KeitaroGateway(client)
-    return KeitaroAPI(gateway)
+    return request.app.state.keitaro_api
 
 
 KeitaroAPIDep = Annotated[KeitaroAPI, Depends(get_keitaro_api)]
 
 
+def get_app_settings(request: Request) -> Settings:
+    """Return the single settings instance owned by the application factory."""
+    return request.app.state.settings
+
+
+SettingsDep = Annotated[Settings, Depends(get_app_settings)]
+
+
 def get_service(
-    api: KeitaroAPIDep, settings: Annotated[Settings, Depends(get_settings)], request: Request
+    api: KeitaroAPIDep, settings: SettingsDep, request: Request
 ) -> Service:
     """Create and inject Service with all required dependencies.
 

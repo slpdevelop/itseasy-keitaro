@@ -7,7 +7,7 @@ name = "itseasy-keitaro"
 version = "0.1.0"
 description = "Campaign manager for Keitaro advertising tracker via API"
 # readme = "../README.md"  # disabled to avoid path issues
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
   {name = "Your Name", email = "your.email@example.com"},
@@ -19,8 +19,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -48,16 +46,13 @@ dev = [
     "mypy>=1.10.0",
 ]
 
-[project.scripts]
-keitaro-campaign = "app.main:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
 # Ruff configuration (style checking and auto-formatting)
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py311"
 exclude = [".venv", "__pycache__", ".git"]
 
 [tool.ruff.lint]
@@ -82,7 +77,7 @@ line-ending = "auto"
 
 # Mypy configuration (static type checking)
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.11"
 strict = true
 warn_return_any = false
 warn_unused_ignores = true

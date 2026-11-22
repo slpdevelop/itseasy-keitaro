@@ -13,7 +13,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in backend/.env (see .env.example)}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -32,6 +32,7 @@ services:
     env_file:
       - .env
     environment:
+      ENV: ${ENV:-development}
       USE_POSTGRESQL: "True"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
@@ -49,9 +50,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # В разработке (ENV=development) uvicorn запускается с --reload;
-    # для production переопределите команду без --reload.
-    command: sh -c "alembic upgrade head && uvicorn app.asgi:app --reload --host 0.0.0.0 --port 8000"
+    command: >-
+      sh -c 'alembic upgrade head &&
+      if [ "$ENV" = "production" ]; then
+        exec uvicorn app.asgi:app --host 0.0.0.0 --port 8000;
+      else
+        exec uvicorn app.asgi:app --reload --host 0.0.0.0 --port 8000;
+      fi' 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s
@@ -77,7 +82,6 @@ services:
       - ../frontend/src:/app/src
       - ../frontend/index.html:/app/index.html
       - ../frontend/package.json:/app/package.json
-      - ../frontend/.env:/app/.env
     depends_on:
       app:
         condition: service_healthy

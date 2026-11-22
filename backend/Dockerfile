@@ -8,13 +8,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install dependencies first so source-only changes reuse this layer.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY pyproject.toml ./
 COPY app ./app
-# Alembic configuration and migration scripts are needed to run `alembic upgrade head` at startup.
+RUN pip install --no-deps .
+# Alembic configuration and migration scripts are needed at startup.
 COPY alembic.ini ./
 COPY alembic ./alembic
-
-RUN pip install .
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser
 USER appuser

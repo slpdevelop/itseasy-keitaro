@@ -11,9 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy.sql.selectable import Select
 
-from app.core.exceptions import CampaignCreationError, FlowNotFoundError, InvalidRequestError
+from app.core.exceptions import CampaignCreationError, FlowNotFoundError
 from app.models.models import Campaign, Flow, FlowOffer, FlowOfferState, FlowType, Offer
 from app.schemas.campaign import RemoteCampaign
+from app.schemas.flow import FlowOfferUpdate
+from app.domain.flow_offers import apply_offer_updates
 
 
 class CampaignRepository:
@@ -144,129 +146,40 @@ class CampaignRepository:
         result = await self._session.execute(query)
         return result.scalar_one_or_none()
 
-    async def update_flow_offers(self, flow_id, items: list[dict[str, Any]]) -> Flow | None:
-        """Persist flow offer bindings, including soft-delete and restore state.
 
-        The path identifier is the local Flow UUID. Offer identifiers in the
-        payload are numeric Keitaro IDs. Shares are normalized to integer
-        percentages that total exactly 100 across non-deleted bindings.
-
-        Sync flags: a binding (and its flow) is marked ``synced=False`` only when
-        something Keitaro actually stores has changed: the binding is new, or its
-        share, state or deleted flag differs from the value before this call.
-        ``pinned`` is local-only metadata (it is not sent to Keitaro), so changing it
-        alone does not create a pending sync. A flag is never set back to True here;
-        bindings that were already pending stay pending.
-
-        Returns:
-            The updated Flow with bindings and offers loaded, or None if the flow
-            does not exist (or is soft-deleted).
-
-        Raises:
-            InvalidRequestError: If the flow is not an OFFER flow or the shares break
-                the rules (pinned total above 100%, all pinned but not 100%).
-        """
+    async def update_flow_offers(
+        self, flow_id: UUID, items: list[FlowOfferUpdate]
+    ) -> Flow | None:
+        """Load and lock a flow, then persist domain-normalized offer bindings."""
         session = self._session
-        # Lock the flow row so a concurrent push (mark_flow_synced) cannot
-        # interleave with this read-modify-write.
         flow = await session.scalar(
             select(Flow)
             .where(Flow.id == flow_id, Flow.deleted.is_(False))
-            .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
+            .options(
+                selectinload(Flow.offers).selectinload(FlowOffer.offer),
+                selectinload(Flow.campaign),
+            )
             .with_for_update(of=Flow)
         )
         if flow is None:
             return None
-        if flow.type != FlowType.OFFER:
-            raise InvalidRequestError("Offers can only be changed on OFFER flows")
-
-        offer_ids = [int(item["offer_id"]) for item in items]
-        if len(offer_ids) != len(set(offer_ids)):
-            raise InvalidRequestError("Duplicate offer IDs are not allowed in one flow")
-
+        offer_ids = [item.offer_id for item in items]
         offers = []
         if offer_ids:
             offers = list(
                 (await session.execute(select(Offer).where(Offer.keitaro_id.in_(offer_ids))))
-                .scalars()
-                .all()
+                .scalars().all()
             )
         by_keitaro_id = {offer.keitaro_id: offer for offer in offers}
-        for missing_id in sorted(set(offer_ids) - by_keitaro_id.keys()):
+        missing = set(offer_ids) - by_keitaro_id.keys()
+        for missing_id in sorted(missing):
             offer = Offer(keitaro_id=missing_id, name=f"Offer {missing_id}", synced=True)
             session.add(offer)
             by_keitaro_id[missing_id] = offer
-        if set(offer_ids) - {offer.keitaro_id for offer in offers}:
+        if missing:
             await session.flush()
 
-        links_by_offer_id = {link.offer_id: link for link in flow.offers}
-        # What Keitaro-visible fields looked like before this update.
-        # Keyed by the local Offer UUID: a binding created in this call has no
-        # offer_id yet (it is only populated on flush), but always has link.offer.
-        before = {link.offer.id: (link.share, link.state, link.deleted) for link in flow.offers}
-        incoming_local_ids = set()
-        for item in items:
-            offer = by_keitaro_id[int(item["offer_id"])]
-            incoming_local_ids.add(offer.id)
-            link = links_by_offer_id.get(offer.id)
-            if link is None:
-                # Assign the ORM relationship, not only offer_id. The service
-                # serializes link.offer after this repository session is closed.
-                link = FlowOffer(offer=offer, share=0)
-                flow.offers.append(link)
-                links_by_offer_id[offer.id] = link
-            else:
-                # Keep the relationship explicitly populated for both existing
-                # and newly-created bindings before returning the detached Flow.
-                link.offer = offer
-            state = item.get("state") or FlowOfferState.ACTIVE.value
-            is_deleted = bool(item.get("deleted", False)) or state == "deleted"
-            if state == "deleted":
-                # "deleted" is a legacy way to say deleted=True. It is not a real
-                # state, so keep the binding's own state (active/disabled) instead
-                # of silently turning a disabled offer into an active one.
-                current_state = link.state or FlowOfferState.ACTIVE
-                state = current_state.value
-            if state not in {FlowOfferState.ACTIVE.value, FlowOfferState.DISABLED.value}:
-                raise InvalidRequestError(f"Invalid offer state: {state}")
-            link.state = FlowOfferState(state)
-            link.deleted = is_deleted
-            link.share = 0 if link.deleted else int(item.get("share", 0))
-            link.pinned = False if link.deleted else bool(item.get("pinned", False))
-
-        # Bindings omitted from the submitted full list are retained as deleted.
-        for link in flow.offers:
-            if link.offer.id not in incoming_local_ids:
-                link.deleted = True
-                link.share = 0
-                link.pinned = False
-
-        active_links = [link for link in links_by_offer_id.values() if not link.deleted]
-        pinned_links = [link for link in active_links if link.pinned]
-        unpinned_links = [link for link in active_links if not link.pinned]
-        pinned_total = sum(link.share for link in pinned_links)
-        if pinned_total > 100:
-            raise InvalidRequestError("The total share of pinned offers cannot exceed 100%")
-        remaining = 100 - pinned_total
-        if not unpinned_links and active_links and remaining != 0:
-            raise InvalidRequestError("All offers are pinned; their shares must total exactly 100%")
-        if unpinned_links:
-            base, remainder = divmod(remaining, len(unpinned_links))
-            # Put remainder points on the last offers: 3 offers => 33, 33, 34.
-            remainder_start = len(unpinned_links) - remainder
-            for index, link in enumerate(unpinned_links):
-                link.share = base + (1 if index >= remainder_start else 0)
-
-        # Mark as pending only what really differs from the pre-update state
-        # (this also covers shares redistributed among unpinned offers).
-        changed = False
-        for link in flow.offers:
-            previous = before.get(link.offer.id)
-            if previous is None or previous != (link.share, link.state, link.deleted):
-                link.synced = False
-                changed = True
-        if changed:
-            flow.synced = False
+        apply_offer_updates(flow, items, by_keitaro_id)
         await session.flush()
         return flow
 
@@ -311,7 +224,10 @@ class CampaignRepository:
                 Flow.type == FlowType.OFFER,
             )
             .where(or_(Flow.synced.is_(False), dirty_link))
-            .options(selectinload(Flow.offers).selectinload(FlowOffer.offer))
+            .options(
+                selectinload(Flow.offers).selectinload(FlowOffer.offer),
+                selectinload(Flow.campaign),
+            )
             .order_by(Flow.keitaro_id)
         )
         return list((await self._session.execute(query)).scalars().unique().all())
