@@ -17,7 +17,6 @@ async function request(path, options = {}) {
 
 export const api = {
   campaigns: () => request('/campaigns'),
-  campaign: (id) => request(`/campaigns/${id}`),
   keitaroOffers: () => request('/offers'),
   localOffers: () => request('/offers/local'),
   createCampaign: (payload) => request('/campaigns', { method: 'POST', body: JSON.stringify(payload) }),

@@ -39,7 +39,7 @@ export default function App() {
 
   const openCompany = async (company) => {
     const id=getKeitaroId(company); setSelected(company); setDetail(null); setDetailLoading(true);
-    try { setDetail(await api.campaign(id)); }
+    try { setDetail(await api.fetchCampaign(id)); }
     catch(e) { notify(`Не удалось загрузить компанию: ${e.message}`,'error'); }
     finally { setDetailLoading(false); }
   };
@@ -144,7 +144,8 @@ export default function App() {
       if (errorCount) notify(`Синхронизация завершилась с ошибками (${errorCount}). Часть данных не обновлена.`,'error');
       else if (pendingCount) notify(`Часть правок осталась несинхронизированной (потоков: ${pendingCount}).`,'error');
       else notify(result?.message || (direction==='fetch'?'Данные получены из Keitaro':'Изменения отправлены в Keitaro'));
-      if(selected) await openCompany(selected);
+      if (direction === 'fetch') setDetail(result);
+      else if (selected) setDetail(await api.fetchCampaign(getKeitaroId(selected)));
       await loadOffers();
     } catch(e) { notify(`Ошибка синхронизации: ${e.message}`,'error'); }
     finally { setBusy(''); }
