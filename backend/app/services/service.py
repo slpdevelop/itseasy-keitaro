@@ -106,35 +106,6 @@ class Service:
             if campaign.name.startswith(self.settings.campaign_name_prefix)
         ]
 
-    async def get_campaign_detail(self, campaign_id: int) -> CampaignDetailResponse:
-        """Retrieve full campaign details with flows and offer bindings.
-
-        Reads the local projection by Keitaro ID and imports a missing projection
-        from Keitaro after verifying the configured campaign-name prefix.
-
-        Args:
-            campaign_id: Numeric Keitaro ID of campaign to retrieve.
-
-        Returns:
-            CampaignDetailResponse with nested flows and offers.
-
-        Raises:
-            KeitaroError: If the campaign must be imported and Keitaro fails.
-        """
-        local_response: CampaignDetailResponse | None = None
-        async with self._db_phase() as session:
-            campaigns = CampaignRepository(session)
-            campaign: Campaign | None = await campaigns.get_campaign_detail(campaign_id)
-            if campaign is not None:
-                if not campaign.name.startswith(self.settings.campaign_name_prefix):
-                    raise CampaignNotFoundError()
-                local_response = CampaignDetailResponse.model_validate(campaign)
-
-        if local_response is not None:
-            await self._ensure_managed_campaign_by_id(campaign_id)
-            return local_response
-        return await self.fetch_campaign(campaign_id)
-
     async def _ensure_managed_campaign(self, campaign: RemoteCampaign) -> None:
         if not campaign.name.startswith(self.settings.campaign_name_prefix):
             raise CampaignNotFoundError()

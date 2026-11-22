@@ -242,7 +242,7 @@ class CampaignFlowDetailResponse(Base):
 class CampaignDetailResponse(Base):
     """Complete campaign details with flows and nested offer bindings.
 
-    Top-level response for GET /api/v1/campaigns/{campaign_id}, including all
+    Response for POST /api/v1/campaigns/{campaign_id}/fetch, including all
     associated streams (GEO and OFFER flows) with their offer allocations.
     Used for displaying full campaign configuration in the UI.
 

@@ -22,14 +22,6 @@ async def get_campaigns(service: ServiceDep) -> list[RemoteCampaignSummary]:
     return await service.get_campaigns()
 
 
-@router.get("/{campaign_id}", response_model=CampaignDetailResponse)
-async def get_campaign_detail(
-    campaign_id: Annotated[int, Path(gt=0)], service: ServiceDep
-) -> CampaignDetailResponse:
-    """Retrieve detailed information about a specific campaign."""
-    return await service.get_campaign_detail(campaign_id)
-
-
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=KTCampaignCreateResponse)
 async def create_campaign(
     data: KTCampaignCreateRequest, service: ServiceDep
