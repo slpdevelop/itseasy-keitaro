@@ -3,9 +3,8 @@ import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from typing import Any
+from typing import AsyncGenerator
 from uuid import UUID
 
 from pydantic import TypeAdapter, ValidationError
@@ -21,8 +20,14 @@ from app.core.exceptions import (
     KeitaroNotFoundError,
 )
 from app.integrations.keitaro_api import KeitaroAPI
-from app.domain.flow_offers import FlowOfferRuleError
-from app.models.models import Campaign, Flow, FlowOffer as FlowOfferORM, FlowOfferState, FlowType, Offer
+from app.models.models import (
+    Campaign,
+    Flow,
+    FlowOffer as FlowOfferORM,
+    FlowOfferState,
+    FlowType,
+    Offer,
+)
 from app.repositories.campaign_repository import CampaignRepository
 from app.repositories.flow_repository import FlowRepository
 from app.repositories.offer_repository import OfferRepository
@@ -38,7 +43,11 @@ from app.schemas.campaign import (
     SyncResult,
 )
 from app.schemas.flow import (
-    FlowCreate, FlowFilter, FlowOffersUpdateRequest, RemoteFlow, FlowOfferCreate,
+    FlowCreate,
+    FlowFilter,
+    FlowOffersUpdateRequest,
+    RemoteFlow,
+    FlowOfferCreate,
     FlowOffersUpdateResponse,
 )
 from app.schemas.offer import RemoteOffer
@@ -76,7 +85,7 @@ class Service:
         self.session_factory: "async_sessionmaker[AsyncSession]" = session_factory
 
     @asynccontextmanager
-    async def _db_phase(self) -> AsyncIterator[AsyncSession]:
+    async def _db_phase(self) -> AsyncGenerator[None, None]:
         """Open a short unit-of-work for one database phase.
 
         Network calls must stay outside this context to avoid holding pool
@@ -92,7 +101,8 @@ class Service:
             raise KeitaroError("Keitaro returned an invalid campaigns response")
         campaigns = [RemoteCampaignSummary.model_validate(item) for item in raw]
         return [
-            campaign for campaign in campaigns
+            campaign
+            for campaign in campaigns
             if campaign.name.startswith(self.settings.campaign_name_prefix)
         ]
 
@@ -333,9 +343,7 @@ class Service:
                 continue
             seen_offer_ids.add(offer.id)
             state = FlowOfferState(remote_binding.state)
-            remote_share = (
-                remote_binding.share if state == FlowOfferState.ACTIVE else 0
-            )
+            remote_share = remote_binding.share if state == FlowOfferState.ACTIVE else 0
 
             binding: FlowOfferORM | None = bindings_by_offer_id.get(offer.id)
             if binding is None:
